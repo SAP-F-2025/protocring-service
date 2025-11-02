@@ -4,28 +4,31 @@ import (
 	"time"
 )
 
-type ViolationType string
-
 // ViolationType constants
 const (
-	ViolationFaceNotDetected ViolationType = "face_not_detected"
-	ViolationMultipleFaces   ViolationType = "multiple_faces"
-	ViolationLookingAway     ViolationType = "looking_away"
-	ViolationMouthOpen       ViolationType = "mouth_open"
-	ViolationHandDetected    ViolationType = "hand_detected"
-	ViolationPersonLeft      ViolationType = "person_left"
-	ViolationHeadTurnedAway  ViolationType = "head_turned_away"
-	ViolationEyesClosed      ViolationType = "eyes_closed"
+	ViolationFaceNotDetected = iota
+	ViolationMultipleFaces
+	ViolationLookingAway
+	ViolationMouthOpen
+	ViolationHandDetected
+	ViolationHeadTurnedAway
+	ViolationCopyPaste
+	ViolationSwitchingTab
+	ViolationFullScreen
+	ViolationPhoneDetect
+	ViolationVoice
+	ViolationBrowserTamper
+	ViolationVoiceChat
+	ViolationFaceMismatch
+	ViolationFailLivenessChallenge
 )
-
-type Severity string
 
 // Severity levels
 const (
-	SeverityLow      Severity = "low"
-	SeverityMedium   Severity = "medium"
-	SeverityHigh     Severity = "high"
-	SeverityCritical Severity = "critical"
+	SeverityLow = iota
+	SeverityMedium
+	SeverityHigh
+	SeverityCritical
 )
 
 // ViolationLog represents a single violation event
@@ -36,40 +39,22 @@ type ViolationLog struct {
 	AssessmentID uint64 `json:"assessment_id" db:"assessment_id"`
 
 	// Classification
-	ViolationType   string   `json:"violation_type" db:"violation_type"`
-	Severity        Severity `json:"severity" db:"severity"`
-	ConfidenceScore float64  `json:"confidence_score" db:"confidence_score"`
+	ViolationType   int     `json:"violation_type" db:"violation_type"`
+	Severity        int     `json:"severity" db:"severity"`
+	ConfidenceScore float64 `json:"confidence_score" db:"confidence_score"`
 
 	// MediaPipe data (will be marshaled to JSONB by repository)
 	DetectionData DetectionData `json:"detection_data" db:"detection_data"`
 
-	// Extracted metrics (denormalized for fast queries)
-	FaceCount      int      `json:"face_count,omitempty" db:"face_count"`
-	HandCount      int      `json:"hand_count,omitempty" db:"hand_count"`
-	HeadPoseYaw    *float64 `json:"head_pose_yaw,omitempty" db:"head_pose_yaw"`
-	HeadPosePitch  *float64 `json:"head_pose_pitch,omitempty" db:"head_pose_pitch"`
-	HeadPoseRoll   *float64 `json:"head_pose_roll,omitempty" db:"head_pose_roll"`
-	GazeDirection  *string  `json:"gaze_direction,omitempty" db:"gaze_direction"`
-	MouthOpenRatio *float64 `json:"mouth_open_ratio,omitempty" db:"mouth_open_ratio"`
-
-	// Frame metadata
-	FrameNumber    int    `json:"frame_number" db:"frame_number"`
-	FrameTimestamp int64  `json:"frame_timestamp" db:"frame_timestamp"`
-	FPS            int    `json:"fps" db:"fps"`
-	Resolution     string `json:"resolution" db:"resolution"`
-
 	// Evidence
-	SnapshotURL     string `json:"snapshot_url,omitempty" db:"snapshot_url"`
-	VideoSegmentURL string `json:"video_segment_url,omitempty" db:"video_segment_url"`
+	SnapshotURL string `json:"snapshot_url,omitempty" db:"snapshot_url"`
 
 	// Context (will be marshaled to JSONB by repository)
 	BrowserInfo       BrowserInfo `json:"browser_info" db:"browser_info"`
 	DeviceFingerprint string      `json:"device_fingerprint" db:"device_fingerprint"`
 
 	// Timestamps
-	ClientTimestamp time.Time `json:"client_timestamp" db:"client_timestamp"`
-	ServerTimestamp time.Time `json:"server_timestamp" db:"server_timestamp"`
-	CreatedAt       time.Time `json:"created_at" db:"created_at"`
+	CreatedAt time.Time `json:"created_at" db:"created_at"`
 }
 
 // DetectionData represents the nested JSONB structure
