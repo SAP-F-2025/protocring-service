@@ -64,7 +64,7 @@ func (s *ViolationService) IngestViolation(ctx context.Context, req *dto.CreateV
 	if err := s.repo.Insert(ctx, violation); err != nil {
 		s.logger.Error("Failed to insert violation",
 			zap.Uint64("attempt_id", req.AttemptID),
-			zap.String("violation_type", req.ViolationType),
+			zap.Int("violation_type", req.ViolationType),
 			zap.Error(err),
 		)
 		return nil, fmt.Errorf("failed to insert violation: %w", err)
@@ -73,8 +73,8 @@ func (s *ViolationService) IngestViolation(ctx context.Context, req *dto.CreateV
 	s.logger.Info("Violation ingested successfully",
 		zap.Uint64("violation_id", violation.ID),
 		zap.Uint64("attempt_id", violation.AttemptID),
-		zap.String("violation_type", violation.ViolationType),
-		zap.String("severity", string(violation.Severity)),
+		zap.Int("violation_type", violation.ViolationType),
+		zap.Int("severity", violation.Severity),
 	)
 
 	return s.modelToResponse(violation), nil
@@ -226,19 +226,22 @@ func (s *ViolationService) ValidateRequest(req *dto.CreateViolationRequest) erro
 		return fmt.Errorf("attempt_id is required")
 	}
 
-	if req.ViolationType == "" {
-		return fmt.Errorf("violation_type is required")
+	if req.UserID == "" {
+		return fmt.Errorf("user_id is required")
 	}
 
-	if req.Severity == "" {
-		return fmt.Errorf("severity is required")
+	if req.AssessmentID == 0 {
+		return fmt.Errorf("assessment_id is required")
+	}
+
+	// Validate violation type (0-23 based on constants)
+	if req.ViolationType < model.ViolationFaceNotDetected || req.ViolationType > model.ViolationFailLivenessChallenge {
+		return fmt.Errorf("invalid violation_type: %d", req.ViolationType)
 	}
 
 	// Validate severity
-	severity := model.Severity(req.Severity)
-	if severity != model.SeverityLow && severity != model.SeverityMedium &&
-		severity != model.SeverityHigh && severity != model.SeverityCritical {
-		return fmt.Errorf("invalid severity: %s", req.Severity)
+	if req.Severity < model.SeverityLow || req.Severity > model.SeverityCritical {
+		return fmt.Errorf("invalid severity: %d", req.Severity)
 	}
 
 	// Validate confidence score
@@ -251,47 +254,17 @@ func (s *ViolationService) ValidateRequest(req *dto.CreateViolationRequest) erro
 
 // dtoToModel converts DTO to model
 func (s *ViolationService) dtoToModel(req *dto.CreateViolationRequest) *model.ViolationLog {
-	violation := &model.ViolationLog{
-		AttemptID:       req.AttemptID,
-		ViolationType:   req.ViolationType,
-		Severity:        model.Severity(req.Severity),
-		ConfidenceScore: req.ConfidenceScore,
-		DetectionData:   req.DetectionData,
-		BrowserInfo:     req.BrowserInfo,
-		ClientTimestamp: req.ClientTimestamp,
+	return &model.ViolationLog{
+		AttemptID:         req.AttemptID,
+		UserID:            req.UserID,
+		AssessmentID:      req.AssessmentID,
+		ViolationType:     req.ViolationType,
+		Severity:          req.Severity,
+		ConfidenceScore:   req.ConfidenceScore,
+		SnapshotURL:       req.SnapshotURL,
+		BrowserInfo:       req.BrowserInfo,
+		DeviceFingerprint: req.DeviceFingerprint,
 	}
-
-	// Extract frame metadata
-	violation.FrameNumber = req.FrameMetadata.FrameNumber
-	violation.FrameTimestamp = req.FrameMetadata.Timestamp
-	violation.FPS = req.FrameMetadata.FPS
-	violation.Resolution = req.FrameMetadata.Resolution
-
-	// Extract facial features from detection data
-	// Extract head pose from first face if available
-	if len(req.DetectionData.Faces) > 0 {
-		face := req.DetectionData.Faces[0]
-		violation.HeadPoseYaw = &face.HeadPose.Yaw
-		violation.HeadPosePitch = &face.HeadPose.Pitch
-		violation.HeadPoseRoll = &face.HeadPose.Roll
-
-		// Extract mouth open ratio
-		if face.MouthAspectRatio > 0 {
-			violation.MouthOpenRatio = &face.MouthAspectRatio
-		}
-	}
-
-	// Extract gaze direction from analysis if looking away
-	if !req.DetectionData.Analysis.IsLookingAtScreen {
-		gaze := "away"
-		violation.GazeDirection = &gaze
-	}
-
-	// Extract face and hand counts
-	violation.FaceCount = len(req.DetectionData.Faces)
-	violation.HandCount = len(req.DetectionData.Hands)
-
-	return violation
 }
 
 // modelToResponse converts model to response DTO
@@ -299,9 +272,14 @@ func (s *ViolationService) modelToResponse(v *model.ViolationLog) *dto.Violation
 	return &dto.ViolationResponse{
 		ID:              v.ID,
 		AttemptID:       v.AttemptID,
+		UserID:          v.UserID,
+		AssessmentID:    v.AssessmentID,
 		ViolationType:   v.ViolationType,
-		Severity:        string(v.Severity),
-		ServerTimestamp: v.ServerTimestamp,
+		ViolationName:   dto.GetViolationTypeName(v.ViolationType),
+		Severity:        v.Severity,
+		SeverityName:    dto.GetSeverityName(v.Severity),
+		ConfidenceScore: v.ConfidenceScore,
+		CreatedAt:       v.CreatedAt,
 		Status:          "processed",
 	}
 }

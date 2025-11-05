@@ -3,6 +3,7 @@ package main
 import (
 	"protocring-service/internal/config"
 	"protocring-service/internal/handler"
+	"protocring-service/internal/middleware"
 	repository "protocring-service/internal/repository/module"
 	"protocring-service/internal/service"
 	"protocring-service/pkg/database"
@@ -34,6 +35,9 @@ func main() {
 		// Provide Gin engine and HTTP server
 		fx.Provide(server.NewGinEngine),
 		fx.Provide(server.NewHTTPServer),
+
+		// Provide casdoor
+		fx.Provide(middleware.NewCasdoorAuthMiddleware),
 
 		// Provide handlers and register routes
 		handler.Module,

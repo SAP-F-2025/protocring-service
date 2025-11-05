@@ -7,30 +7,21 @@ import (
 
 // CreateViolationRequest - API request from client
 type CreateViolationRequest struct {
-	AttemptID       uint64  `json:"attempt_id" binding:"required"`
-	ViolationType   string  `json:"violation_type" binding:"required,oneof=face_not_detected multiple_faces looking_away mouth_open hand_detected person_left head_turned_away eyes_closed"`
-	Severity        string  `json:"severity" binding:"required,oneof=low medium high critical"`
+	AttemptID    uint64 `json:"attempt_id" binding:"required"`
+	UserID       string `json:"user_id" binding:"required"`
+	AssessmentID uint64 `json:"assessment_id" binding:"required"`
+
+	// Classification
+	ViolationType   int     `json:"violation_type" binding:"required,min=0,max=23"`
+	Severity        int     `json:"severity" binding:"required,min=0,max=3"`
 	ConfidenceScore float64 `json:"confidence_score" binding:"min=0,max=1"`
 
-	// MediaPipe detection (will be stored in JSONB)
-	DetectionData model.DetectionData `json:"detection_data" binding:"required"`
-
-	// Frame info
-	FrameMetadata FrameMetadata `json:"frame_metadata" binding:"required"`
-
-	// Optional evidence
-	SnapshotBase64 string `json:"snapshot_base64,omitempty"`
+	// Evidence
+	SnapshotURL string `json:"snapshot_url,omitempty"`
 
 	// Context
-	BrowserInfo     model.BrowserInfo `json:"browser_info" binding:"required"`
-	ClientTimestamp time.Time         `json:"client_timestamp" binding:"required"`
-}
-
-type FrameMetadata struct {
-	FrameNumber int    `json:"frame_number"`
-	Timestamp   int64  `json:"timestamp"`
-	FPS         int    `json:"fps"`
-	Resolution  string `json:"resolution"`
+	BrowserInfo       model.BrowserInfo `json:"browser_info" binding:"required"`
+	DeviceFingerprint string            `json:"device_fingerprint" binding:"required"`
 }
 
 // BatchViolationRequest - for batching
@@ -42,8 +33,46 @@ type BatchViolationRequest struct {
 type ViolationResponse struct {
 	ID              uint64    `json:"id"`
 	AttemptID       uint64    `json:"attempt_id"`
-	ViolationType   string    `json:"violation_type"`
-	Severity        string    `json:"severity"`
-	ServerTimestamp time.Time `json:"server_timestamp"`
+	UserID          string    `json:"user_id"`
+	AssessmentID    uint64    `json:"assessment_id"`
+	ViolationType   int       `json:"violation_type"`
+	ViolationName   string    `json:"violation_name"`
+	Severity        int       `json:"severity"`
+	SeverityName    string    `json:"severity_name"`
+	ConfidenceScore float64   `json:"confidence_score"`
+	CreatedAt       time.Time `json:"created_at"`
 	Status          string    `json:"status"`
+}
+
+// Helper functions to convert violation type and severity to names
+func GetViolationTypeName(vType int) string {
+	names := []string{
+		"face_not_detected",
+		"multiple_faces",
+		"looking_away",
+		"mouth_open",
+		"hand_detected",
+		"head_turned_away",
+		"copy_paste",
+		"switching_tab",
+		"full_screen",
+		"phone_detect",
+		"voice",
+		"browser_tamper",
+		"voice_chat",
+		"face_mismatch",
+		"fail_liveness_challenge",
+	}
+	if vType >= 0 && vType < len(names) {
+		return names[vType]
+	}
+	return "unknown"
+}
+
+func GetSeverityName(severity int) string {
+	names := []string{"low", "medium", "high", "critical"}
+	if severity >= 0 && severity < len(names) {
+		return names[severity]
+	}
+	return "unknown"
 }

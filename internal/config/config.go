@@ -12,6 +12,7 @@ type Config struct {
 	Database DatabaseConfig
 	Redis    RedisConfig
 	Log      LogConfig
+	Casdoor  CasdoorConfig
 }
 
 type ServerConfig struct {
@@ -44,6 +45,15 @@ type RedisConfig struct {
 type LogConfig struct {
 	Level  string // debug, info, warn, error
 	Format string // json, console
+}
+
+type CasdoorConfig struct {
+	Endpoint     string
+	ClientID     string
+	ClientSecret string
+	Cert         string
+	Application  string
+	Organization string
 }
 
 // Load reads configuration from file or environment variables.
@@ -103,4 +113,10 @@ func setDefaults() {
 	// Log defaults
 	viper.SetDefault("log.level", "info")
 	viper.SetDefault("log.format", "json")
+
+	// Casdoor defaults
+	viper.SetDefault("casdoor.endpoint", "localhost:8000")
+	viper.SetDefault("casdoor.clientid", "")
+	viper.SetDefault("casdoor.clientsecret", "")
+	viper.SetDefault("casdoor.cert", "")
 }

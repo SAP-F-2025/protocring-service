@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"protocring-service/internal/config"
+	"protocring-service/internal/middleware"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/fx"
@@ -15,15 +16,13 @@ import (
 )
 
 // NewGinEngine creates a new Gin engine
-func NewGinEngine(cfg *config.Config) *gin.Engine {
+func NewGinEngine(cfg *config.Config, logger *zap.Logger, authCasdoorMiddleware *middleware.CasdoorAuthMiddleware) *gin.Engine {
 	// Set Gin mode
 	gin.SetMode(cfg.Server.Mode)
 
 	engine := gin.New()
 
-	// Use default middleware
-	engine.Use(gin.Recovery())
-	engine.Use(gin.Logger())
+	middleware.SetupMiddleware(engine, logger, authCasdoorMiddleware)
 
 	return engine
 }

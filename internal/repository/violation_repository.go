@@ -21,8 +21,8 @@ type ViolationRepositoryInterface interface {
 	// FindByUserID finds violations for a user within time range
 	FindByUserID(ctx context.Context, userID string, startTime, endTime time.Time, limit, offset int) ([]*model.ViolationLog, error)
 
-	// FindByTimeRange finds violations within a time range
-	FindByTimeRange(ctx context.Context, startTime, endTime time.Time, violationType string, severity model.Severity, limit, offset int) ([]*model.ViolationLog, error)
+	// FindByTimeRange finds violations within a time range (optional filters)
+	FindByTimeRange(ctx context.Context, startTime, endTime time.Time, violationType *int, severity *int, limit, offset int) ([]*model.ViolationLog, error)
 
 	// GetLatestByAttempt gets the most recent violation for an attempt
 	GetLatestByAttempt(ctx context.Context, attemptID uint64) (*model.ViolationLog, error)
@@ -37,7 +37,7 @@ type ViolationRepositoryInterface interface {
 	GetViolationTimeline(ctx context.Context, attemptID uint64, bucketSize time.Duration) ([]ViolationTimelineBucket, error)
 
 	// GetSeverityDistribution gets severity distribution for an attempt
-	GetSeverityDistribution(ctx context.Context, attemptID uint64) (map[model.Severity]int64, error)
+	GetSeverityDistribution(ctx context.Context, attemptID uint64) (map[int]int64, error)
 
 	// DeleteOldViolations deletes violations older than retention period
 	DeleteOldViolations(ctx context.Context, olderThan time.Duration) (int64, error)
@@ -57,7 +57,7 @@ type ViolationTimelineBucket struct {
 type ViolationAnalytics struct {
 	TotalCount           int64                     `json:"total_count"`
 	CountByType          map[string]int64          `json:"count_by_type"`
-	SeverityDistribution map[model.Severity]int64  `json:"severity_distribution"`
+	SeverityDistribution map[int]int64             `json:"severity_distribution"`
 	Timeline             []ViolationTimelineBucket `json:"timeline"`
 	LatestViolation      *model.ViolationLog       `json:"latest_violation,omitempty"`
 }
