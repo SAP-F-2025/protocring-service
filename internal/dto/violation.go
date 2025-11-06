@@ -22,6 +22,9 @@ type CreateViolationRequest struct {
 	// Context
 	BrowserInfo       model.BrowserInfo `json:"browser_info" binding:"required"`
 	DeviceFingerprint string            `json:"device_fingerprint" binding:"required"`
+	CreatedAt         time.Time         `json:"created_at" binding:"required"`
+	EndedAt           time.Time         `json:"ended_at" binding:"required"`
+	IsProlonged       bool              `json:"is_prolonged" binding:"required"`
 }
 
 // BatchViolationRequest - for batching

@@ -51,7 +51,9 @@ type ViolationLog struct {
 	DeviceFingerprint string      `json:"device_fingerprint" db:"device_fingerprint"`
 
 	// Timestamps
-	CreatedAt time.Time `json:"created_at" db:"created_at"`
+	CreatedAt   time.Time `json:"created_at" db:"created_at"`
+	EndedAt     time.Time `json:"ended_at" db:"ended_at"`
+	IsProlonged bool      `json:"is_prolonged" db:"is_prolonged"`
 }
 
 // BrowserInfo represents browser context

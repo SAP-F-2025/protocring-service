@@ -249,6 +249,10 @@ func (s *ViolationService) ValidateRequest(req *dto.CreateViolationRequest) erro
 		return fmt.Errorf("confidence_score must be between 0 and 1")
 	}
 
+	if req.IsProlonged && req.EndedAt.IsZero() {
+		return fmt.Errorf("ended_at is required for prolonged violations")
+	}
+
 	return nil
 }
 
@@ -264,6 +268,9 @@ func (s *ViolationService) dtoToModel(req *dto.CreateViolationRequest) *model.Vi
 		SnapshotURL:       req.SnapshotURL,
 		BrowserInfo:       req.BrowserInfo,
 		DeviceFingerprint: req.DeviceFingerprint,
+		CreatedAt:         req.CreatedAt,
+		EndedAt:           req.EndedAt,
+		IsProlonged:       req.IsProlonged,
 	}
 }
 
