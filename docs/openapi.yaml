@@ -1,0 +1,1531 @@
+openapi: 3.0.3
+info:
+  title: Violation Detection API
+  description: |
+    API for processing MediaPipe violation detection events and storing them in TimescaleDB
+    for real-time and historical analysis.
+  version: 1.0.0
+  contact:
+    name: Development Team
+
+servers:
+  - url: http://localhost:8081/api/v1
+    description: Local development server
+  - url: https://proctoring.m3xd.dev/api/v1
+    description: Production server
+
+tags:
+  - name: Violations
+    description: Violation detection and retrieval endpoints
+  - name: Analytics
+    description: Violation analytics, statistics, and dashboard endpoints
+
+paths:
+  /violations:
+    post:
+      tags:
+        - Violations
+      summary: Ingest single violation
+      description: Process and store a single violation detection event from MediaPipe
+      operationId: ingestViolation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ViolationRequest'
+            example:
+              attempt_id: 12345
+              violation_type: looking_away
+              severity: high
+              confidence_score: 0.95
+              detection_data:
+                mediapipe_version: "0.10.0"
+                model: face_mesh
+                faces:
+                  - bounding_box:
+                      x_min: 100.5
+                      y_min: 150.2
+                      width: 200.0
+                      height: 250.0
+                    landmarks:
+                      - x: 0.5
+                        y: 0.5
+                        z: 0.0
+                    keypoints:
+                      nose:
+                        x: 0.5
+                        y: 0.45
+                      left_eye:
+                        x: 0.45
+                        y: 0.4
+                      right_eye:
+                        x: 0.55
+                        y: 0.4
+                    score: 0.98
+                    head_pose:
+                      yaw: 45.5
+                      pitch: 10.2
+                      roll: 5.1
+                    eye_aspect_ratio: 0.25
+                    mouth_aspect_ratio: 0.15
+                hands: []
+                pose: null
+                analysis:
+                  is_centered: false
+                  is_looking_at_screen: false
+                  is_talking: false
+                  is_distracted: true
+                  anomaly: true
+                  reason: User looking away from screen
+              frame_metadata:
+                frame_number: 1500
+                timestamp: 1730304000000
+                fps: 30
+                resolution: 1920x1080
+              snapshot_base64: ""
+              browser_info:
+                user_agent: Mozilla/5.0...
+                platform: Win32
+                language: en-US
+                screen_resolution: 1920x1080
+                timezone: Asia/Ho_Chi_Minh
+              client_timestamp: "2025-10-31T10:00:00Z"
+      responses:
+        '201':
+          description: Violation successfully processed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ViolationResponse'
+              example:
+                id: 1
+                attempt_id: 12345
+                violation_type: looking_away
+                severity: high
+                server_timestamp: "2025-10-31T10:00:01Z"
+                status: processed
+        '400':
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: invalid_request
+                message: attempt_id is required
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: ingestion_failed
+                message: "failed to insert violation: database connection failed"
+
+  /violations/batch:
+    post:
+      tags:
+        - Violations
+      summary: Ingest batch violations
+      description: Process and store multiple violations at once (max 50 per batch)
+      operationId: ingestBatchViolations
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchViolationRequest'
+            example:
+              violations:
+                - attempt_id: 12345
+                  violation_type: looking_away
+                  severity: high
+                  confidence_score: 0.95
+                  detection_data:
+                    mediapipe_version: "0.10.0"
+                    model: face_mesh
+                  frame_metadata:
+                    frame_number: 1500
+                    timestamp: 1730304000000
+                    fps: 30
+                    resolution: 1920x1080
+                  browser_info:
+                    user_agent: Mozilla/5.0...
+                  client_timestamp: "2025-10-31T10:00:00Z"
+                - attempt_id: 12345
+                  violation_type: hand_detected
+                  severity: medium
+                  confidence_score: 0.87
+                  detection_data:
+                    mediapipe_version: "0.10.0"
+                    model: hand_landmarker
+                  frame_metadata:
+                    frame_number: 1501
+                    timestamp: 1730304001000
+                    fps: 30
+                    resolution: 1920x1080
+                  browser_info:
+                    user_agent: Mozilla/5.0...
+                  client_timestamp: "2025-10-31T10:00:01Z"
+      responses:
+        '201':
+          description: Batch violations successfully processed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchViolationResponse'
+              example:
+                success: true
+                count: 2
+                data:
+                  - id: 1
+                    attempt_id: 12345
+                    violation_type: looking_away
+                    severity: high
+                    server_timestamp: "2025-10-31T10:00:01Z"
+                    status: processed
+                  - id: 2
+                    attempt_id: 12345
+                    violation_type: hand_detected
+                    severity: medium
+                    server_timestamp: "2025-10-31T10:00:01Z"
+                    status: processed
+        '400':
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /violations/attempt/{attempt_id}:
+    get:
+      tags:
+        - Violations
+      summary: Get violations by attempt
+      description: Retrieve all violations for a specific attempt with pagination
+      operationId: getViolationsByAttempt
+      parameters:
+        - name: attempt_id
+          in: path
+          required: true
+          description: The attempt ID
+          schema:
+            type: integer
+            format: int64
+          example: 12345
+        - name: limit
+          in: query
+          description: Number of results to return
+          schema:
+            type: integer
+            default: 20
+            minimum: 1
+            maximum: 100
+          example: 10
+        - name: offset
+          in: query
+          description: Offset for pagination
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+          example: 0
+      responses:
+        '200':
+          description: Violations retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ViolationListResponse'
+              example:
+                data:
+                  - id: 1
+                    attempt_id: 12345
+                    user_id: user123
+                    assessment_id: 456
+                    violation_type: looking_away
+                    severity: high
+                    confidence_score: 0.95
+                    face_count: 1
+                    hand_count: 0
+                    head_pose_yaw: 45.5
+                    head_pose_pitch: 10.2
+                    head_pose_roll: 5.1
+                    gaze_direction: away
+                    mouth_open_ratio: 0.15
+                    frame_number: 1500
+                    frame_timestamp: 1730304000000
+                    fps: 30
+                    resolution: 1920x1080
+                    client_timestamp: "2025-10-31T10:00:00Z"
+                    server_timestamp: "2025-10-31T10:00:01Z"
+                    created_at: "2025-10-31T10:00:01Z"
+                count: 1
+                limit: 10
+                offset: 0
+        '404':
+          description: No violations found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: not_found
+                message: no violations found for this attempt
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /violations/attempt/{attempt_id}/latest:
+    get:
+      tags:
+        - Violations
+      summary: Get latest violation
+      description: Get the most recent violation for a specific attempt
+      operationId: getLatestViolation
+      parameters:
+        - name: attempt_id
+          in: path
+          required: true
+          description: The attempt ID
+          schema:
+            type: integer
+            format: int64
+          example: 12345
+      responses:
+        '200':
+          description: Latest violation retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ViolationDetail'
+              example:
+                id: 1
+                attempt_id: 12345
+                violation_type: looking_away
+                severity: high
+                server_timestamp: "2025-10-31T10:00:01Z"
+        '404':
+          description: No violations found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /violations/analytics/{attempt_id}:
+    get:
+      tags:
+        - Analytics
+      summary: Get violation analytics
+      description: |
+        Get aggregated analytics for an attempt including counts,
+        severity distribution, and timeline
+      operationId: getViolationAnalytics
+      parameters:
+        - name: attempt_id
+          in: path
+          required: true
+          description: The attempt ID
+          schema:
+            type: integer
+            format: int64
+          example: 12345
+        - name: bucket_size
+          in: query
+          description: Time bucket size for timeline (e.g., "5m", "1h", "30s")
+          schema:
+            type: string
+            default: "5m"
+            enum:
+              - "30s"
+              - "1m"
+              - "5m"
+              - "15m"
+              - "1h"
+              - "6h"
+              - "1d"
+          example: "5m"
+      responses:
+        '200':
+          description: Analytics retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ViolationAnalytics'
+              example:
+                total_count: 25
+                count_by_type:
+                  looking_away: 10
+                  hand_detected: 5
+                  mouth_open: 8
+                  multiple_faces: 2
+                severity_distribution:
+                  critical: 2
+                  high: 8
+                  medium: 10
+                  low: 5
+                timeline:
+                  - bucket: "2025-10-31T10:00:00Z"
+                    violation_count: 8
+                    critical_count: 1
+                    high_count: 3
+                    medium_count: 3
+                    low_count: 1
+                  - bucket: "2025-10-31T10:05:00Z"
+                    violation_count: 12
+                    critical_count: 1
+                    high_count: 4
+                    medium_count: 5
+                    low_count: 2
+                  - bucket: "2025-10-31T10:10:00Z"
+                    violation_count: 5
+                    critical_count: 0
+                    high_count: 1
+                    medium_count: 2
+                    low_count: 2
+                latest_violation:
+                  id: 25
+                  violation_type: looking_away
+                  severity: high
+                  server_timestamp: "2025-10-31T10:12:30Z"
+        '404':
+          description: No violations found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /dashboard/overview:
+    get:
+      tags:
+        - Analytics
+      summary: Get dashboard overview
+      description: |
+        Get high-level dashboard metrics including total violations, attempts,
+        users, severity breakdown, and comparison with previous period
+      operationId: getDashboardOverview
+      parameters:
+        - name: start_time
+          in: query
+          required: true
+          description: Start time of the period (ISO 8601)
+          schema:
+            type: string
+            format: date-time
+          example: "2025-10-31T00:00:00Z"
+        - name: end_time
+          in: query
+          required: true
+          description: End time of the period (ISO 8601)
+          schema:
+            type: string
+            format: date-time
+          example: "2025-10-31T23:59:59Z"
+      responses:
+        '200':
+          description: Dashboard overview retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DashboardOverview'
+        '400':
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /dashboard/realtime:
+    get:
+      tags:
+        - Analytics
+      summary: Get real-time statistics
+      description: |
+        Get real-time violation statistics including active attempts,
+        recent violations, and violation counts for the last 5 minutes and hour
+      operationId: getRealTimeStats
+      responses:
+        '200':
+          description: Real-time stats retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RealTimeStats'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /dashboard/attempt/{attempt_id}/summary:
+    get:
+      tags:
+        - Analytics
+      summary: Get attempt violation summary
+      description: |
+        Get aggregated violation summary for a specific attempt including
+        counts, severity breakdown, duration, and confidence metrics
+      operationId: getAttemptSummary
+      parameters:
+        - name: attempt_id
+          in: path
+          required: true
+          description: The attempt ID
+          schema:
+            type: integer
+            format: int64
+          example: 12345
+      responses:
+        '200':
+          description: Attempt summary retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AttemptViolationSummary'
+        '404':
+          description: Attempt not found or no violations
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /analytics/stats/hourly:
+    get:
+      tags:
+        - Analytics
+      summary: Get hourly violation statistics
+      description: |
+        Get hourly aggregated violation statistics for a time range
+      operationId: getHourlyStats
+      parameters:
+        - name: start_time
+          in: query
+          required: true
+          description: Start time (ISO 8601)
+          schema:
+            type: string
+            format: date-time
+          example: "2025-10-31T00:00:00Z"
+        - name: end_time
+          in: query
+          required: true
+          description: End time (ISO 8601)
+          schema:
+            type: string
+            format: date-time
+          example: "2025-10-31T23:59:59Z"
+      responses:
+        '200':
+          description: Hourly stats retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/HourlyViolationStats'
+                  count:
+                    type: integer
+                    description: Number of buckets returned
+        '400':
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /analytics/stats/daily:
+    get:
+      tags:
+        - Analytics
+      summary: Get daily violation statistics
+      description: |
+        Get daily aggregated violation statistics for a time range
+      operationId: getDailyStats
+      parameters:
+        - name: start_time
+          in: query
+          required: true
+          description: Start time (ISO 8601)
+          schema:
+            type: string
+            format: date-time
+          example: "2025-10-01T00:00:00Z"
+        - name: end_time
+          in: query
+          required: true
+          description: End time (ISO 8601)
+          schema:
+            type: string
+            format: date-time
+          example: "2025-10-31T23:59:59Z"
+      responses:
+        '200':
+          description: Daily stats retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/DailyViolationStats'
+                  count:
+                    type: integer
+                    description: Number of buckets returned
+        '400':
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /analytics/attempts/summaries:
+    post:
+      tags:
+        - Analytics
+      summary: Get summaries for multiple attempts
+      description: |
+        Get violation summaries for multiple attempts in a single request
+      operationId: getAttemptSummaries
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - attempt_ids
+              properties:
+                attempt_ids:
+                  type: array
+                  items:
+                    type: integer
+                    format: int64
+                  maxItems: 100
+                  description: Array of attempt IDs (max 100)
+                  example: [12345, 12346, 12347]
+      responses:
+        '200':
+          description: Attempt summaries retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AttemptViolationSummary'
+                  count:
+                    type: integer
+                    description: Number of summaries returned
+        '400':
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  schemas:
+    ViolationRequest:
+      type: object
+      required:
+        - attempt_id
+        - violation_type
+        - severity
+        - confidence_score
+        - detection_data
+        - frame_metadata
+        - client_timestamp
+      properties:
+        attempt_id:
+          type: integer
+          format: int64
+          description: Unique identifier for the assessment attempt
+          example: 12345
+        violation_type:
+          $ref: '#/components/schemas/ViolationType'
+        severity:
+          $ref: '#/components/schemas/Severity'
+        confidence_score:
+          type: number
+          format: float
+          minimum: 0.0
+          maximum: 1.0
+          description: Confidence score of the detection
+          example: 0.95
+        detection_data:
+          $ref: '#/components/schemas/DetectionData'
+        frame_metadata:
+          $ref: '#/components/schemas/FrameMetadata'
+        snapshot_base64:
+          type: string
+          description: Base64 encoded snapshot image
+          example: ""
+        browser_info:
+          $ref: '#/components/schemas/BrowserInfo'
+        client_timestamp:
+          type: string
+          format: date-time
+          description: Timestamp from client when violation was detected
+          example: "2025-10-31T10:00:00Z"
+
+    BatchViolationRequest:
+      type: object
+      required:
+        - violations
+      properties:
+        violations:
+          type: array
+          items:
+            $ref: '#/components/schemas/ViolationRequest'
+          maxItems: 50
+          description: Array of violations (max 50)
+
+    ViolationResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: Database ID of the violation
+          example: 1
+        attempt_id:
+          type: integer
+          format: int64
+          example: 12345
+        violation_type:
+          $ref: '#/components/schemas/ViolationType'
+        severity:
+          $ref: '#/components/schemas/Severity'
+        server_timestamp:
+          type: string
+          format: date-time
+          description: Server timestamp when violation was processed
+          example: "2025-10-31T10:00:01Z"
+        status:
+          type: string
+          enum:
+            - processed
+            - failed
+          example: processed
+
+    BatchViolationResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        count:
+          type: integer
+          description: Number of violations successfully processed
+          example: 2
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ViolationResponse'
+
+    ViolationDetail:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        attempt_id:
+          type: integer
+          format: int64
+        user_id:
+          type: string
+        assessment_id:
+          type: integer
+          format: int64
+        violation_type:
+          $ref: '#/components/schemas/ViolationType'
+        severity:
+          $ref: '#/components/schemas/Severity'
+        confidence_score:
+          type: number
+          format: float
+        detection_data:
+          type: object
+          additionalProperties: true
+        browser_info:
+          type: object
+          additionalProperties: true
+        face_count:
+          type: integer
+        hand_count:
+          type: integer
+        head_pose_yaw:
+          type: number
+          format: float
+        head_pose_pitch:
+          type: number
+          format: float
+        head_pose_roll:
+          type: number
+          format: float
+        gaze_direction:
+          type: string
+        mouth_open_ratio:
+          type: number
+          format: float
+        frame_number:
+          type: integer
+        frame_timestamp:
+          type: integer
+          format: int64
+        fps:
+          type: integer
+        resolution:
+          type: string
+        snapshot_url:
+          type: string
+        video_segment_url:
+          type: string
+        device_fingerprint:
+          type: string
+        client_timestamp:
+          type: string
+          format: date-time
+        server_timestamp:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+
+    ViolationListResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ViolationDetail'
+        count:
+          type: integer
+          description: Number of violations returned
+        limit:
+          type: integer
+          description: Limit used for pagination
+        offset:
+          type: integer
+          description: Offset used for pagination
+
+    ViolationAnalytics:
+      type: object
+      properties:
+        total_count:
+          type: integer
+          description: Total number of violations
+          example: 25
+        count_by_type:
+          type: object
+          additionalProperties:
+            type: integer
+          description: Count of violations by type
+          example:
+            looking_away: 10
+            hand_detected: 5
+            mouth_open: 8
+        severity_distribution:
+          type: object
+          additionalProperties:
+            type: integer
+          description: Distribution of violations by severity
+          example:
+            critical: 2
+            high: 8
+            medium: 10
+            low: 5
+        timeline:
+          type: array
+          items:
+            $ref: '#/components/schemas/TimelineBucket'
+        latest_violation:
+          $ref: '#/components/schemas/ViolationSummary'
+
+    TimelineBucket:
+      type: object
+      properties:
+        bucket:
+          type: string
+          format: date-time
+          description: Start time of the bucket
+          example: "2025-10-31T10:00:00Z"
+        violation_count:
+          type: integer
+          description: Total violations in this bucket
+          example: 8
+        critical_count:
+          type: integer
+          example: 1
+        high_count:
+          type: integer
+          example: 3
+        medium_count:
+          type: integer
+          example: 3
+        low_count:
+          type: integer
+          example: 1
+
+    ViolationSummary:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        violation_type:
+          $ref: '#/components/schemas/ViolationType'
+        severity:
+          $ref: '#/components/schemas/Severity'
+        server_timestamp:
+          type: string
+          format: date-time
+
+    DetectionData:
+      type: object
+      description: MediaPipe detection data
+      properties:
+        mediapipe_version:
+          type: string
+          example: "0.10.0"
+        model:
+          type: string
+          example: face_mesh
+        faces:
+          type: array
+          items:
+            $ref: '#/components/schemas/FaceDetection'
+        hands:
+          type: array
+          items:
+            type: object
+        pose:
+          type: object
+          nullable: true
+        analysis:
+          $ref: '#/components/schemas/DetectionAnalysis'
+
+    FaceDetection:
+      type: object
+      properties:
+        bounding_box:
+          $ref: '#/components/schemas/BoundingBox'
+        landmarks:
+          type: array
+          items:
+            $ref: '#/components/schemas/Landmark'
+        keypoints:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/Point2D'
+        score:
+          type: number
+          format: float
+          example: 0.98
+        head_pose:
+          $ref: '#/components/schemas/HeadPose'
+        eye_aspect_ratio:
+          type: number
+          format: float
+          example: 0.25
+        mouth_aspect_ratio:
+          type: number
+          format: float
+          example: 0.15
+
+    BoundingBox:
+      type: object
+      properties:
+        x_min:
+          type: number
+          format: float
+        y_min:
+          type: number
+          format: float
+        width:
+          type: number
+          format: float
+        height:
+          type: number
+          format: float
+
+    Landmark:
+      type: object
+      properties:
+        x:
+          type: number
+          format: float
+        y:
+          type: number
+          format: float
+        z:
+          type: number
+          format: float
+
+    Point2D:
+      type: object
+      properties:
+        x:
+          type: number
+          format: float
+        y:
+          type: number
+          format: float
+
+    HeadPose:
+      type: object
+      properties:
+        yaw:
+          type: number
+          format: float
+          description: Head rotation around vertical axis
+          example: 45.5
+        pitch:
+          type: number
+          format: float
+          description: Head rotation around horizontal axis
+          example: 10.2
+        roll:
+          type: number
+          format: float
+          description: Head rotation around front-back axis
+          example: 5.1
+
+    DetectionAnalysis:
+      type: object
+      properties:
+        is_centered:
+          type: boolean
+        is_looking_at_screen:
+          type: boolean
+        is_talking:
+          type: boolean
+        is_distracted:
+          type: boolean
+        anomaly:
+          type: boolean
+        reason:
+          type: string
+          example: User looking away from screen
+
+    FrameMetadata:
+      type: object
+      required:
+        - frame_number
+        - timestamp
+        - fps
+        - resolution
+      properties:
+        frame_number:
+          type: integer
+          description: Frame number in the video stream
+          example: 1500
+        timestamp:
+          type: integer
+          format: int64
+          description: Timestamp in milliseconds
+          example: 1730304000000
+        fps:
+          type: integer
+          description: Frames per second
+          example: 30
+        resolution:
+          type: string
+          description: Video resolution
+          example: 1920x1080
+
+    BrowserInfo:
+      type: object
+      properties:
+        user_agent:
+          type: string
+          example: Mozilla/5.0...
+        platform:
+          type: string
+          example: Win32
+        language:
+          type: string
+          example: en-US
+        screen_resolution:
+          type: string
+          example: 1920x1080
+        timezone:
+          type: string
+          example: Asia/Ho_Chi_Minh
+
+    ViolationType:
+      type: string
+      enum:
+        - face_not_detected
+        - multiple_faces
+        - looking_away
+        - mouth_open
+        - hand_detected
+        - person_left
+        - head_turned_away
+        - eyes_closed
+      description: Type of violation detected
+      example: looking_away
+
+    Severity:
+      type: string
+      enum:
+        - low
+        - medium
+        - high
+        - critical
+      description: Severity level of the violation
+      example: high
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Error code
+          example: invalid_request
+        message:
+          type: string
+          description: Human-readable error message
+          example: attempt_id is required
+
+    # Dashboard and Analytics Schemas
+    DashboardOverview:
+      type: object
+      description: High-level dashboard metrics for current period
+      properties:
+        total_violations:
+          type: integer
+          format: int64
+          description: Total number of violations in the period
+          example: 1250
+        total_attempts:
+          type: integer
+          format: int64
+          description: Total number of unique attempts
+          example: 45
+        total_users:
+          type: integer
+          format: int64
+          description: Total number of unique users
+          example: 38
+        total_assessments:
+          type: integer
+          format: int64
+          description: Total number of unique assessments
+          example: 12
+        critical_count:
+          type: integer
+          format: int64
+          description: Number of critical severity violations
+          example: 125
+        high_count:
+          type: integer
+          format: int64
+          description: Number of high severity violations
+          example: 380
+        medium_count:
+          type: integer
+          format: int64
+          description: Number of medium severity violations
+          example: 520
+        low_count:
+          type: integer
+          format: int64
+          description: Number of low severity violations
+          example: 225
+        violations_change:
+          type: number
+          format: float
+          description: Percentage change from previous period
+          example: 15.5
+        attempts_change:
+          type: number
+          format: float
+          description: Percentage change in attempts from previous period
+          example: -5.2
+        users_change:
+          type: number
+          format: float
+          description: Percentage change in users from previous period
+          example: 8.3
+        top_violation_types:
+          type: array
+          items:
+            $ref: '#/components/schemas/ViolationTypeCount'
+          description: Top violation types by count
+
+    ViolationTypeCount:
+      type: object
+      description: Count statistics for a specific violation type
+      properties:
+        violation_type:
+          type: integer
+          description: Violation type ID
+          example: 2
+        type_name:
+          type: string
+          description: Human-readable violation type name
+          example: Looking Away
+        count:
+          type: integer
+          format: int64
+          description: Number of occurrences
+          example: 450
+        percentage:
+          type: number
+          format: float
+          description: Percentage of total violations
+          example: 36.0
+
+    RealTimeStats:
+      type: object
+      description: Real-time violation statistics
+      properties:
+        last_updated:
+          type: string
+          format: date-time
+          description: Timestamp when stats were last updated
+          example: "2025-10-31T10:30:00Z"
+        active_attempts:
+          type: integer
+          format: int64
+          description: Number of currently active attempts
+          example: 12
+        violations_last_5min:
+          type: integer
+          format: int64
+          description: Violations detected in last 5 minutes
+          example: 25
+        violations_last_hour:
+          type: integer
+          format: int64
+          description: Violations detected in last hour
+          example: 180
+        critical_violations:
+          type: integer
+          format: int64
+          description: Critical violations in last 5 minutes
+          example: 3
+        recent_violations:
+          type: array
+          items:
+            $ref: '#/components/schemas/ViolationDetail'
+          description: Most recent violations (last 10)
+
+    AttemptViolationSummary:
+      type: object
+      description: Aggregated violation summary for a specific attempt
+      properties:
+        attempt_id:
+          type: integer
+          format: int64
+          description: The attempt ID
+          example: 12345
+        user_id:
+          type: string
+          description: User identifier
+          example: user123
+        assessment_id:
+          type: integer
+          format: int64
+          description: Assessment identifier
+          example: 456
+        first_violation_at:
+          type: string
+          format: date-time
+          description: Timestamp of first violation
+          example: "2025-10-31T10:00:00Z"
+        last_violation_at:
+          type: string
+          format: date-time
+          description: Timestamp of last violation
+          example: "2025-10-31T10:15:30Z"
+        duration_seconds:
+          type: number
+          format: float
+          description: Duration between first and last violation in seconds
+          example: 930.5
+        total_violations:
+          type: integer
+          format: int64
+          description: Total number of violations
+          example: 25
+        unique_violation_types:
+          type: integer
+          format: int64
+          description: Number of unique violation types detected
+          example: 4
+        prolonged_violations_count:
+          type: integer
+          format: int64
+          description: Number of prolonged violations
+          example: 8
+        critical_count:
+          type: integer
+          format: int64
+          description: Number of critical violations
+          example: 2
+        high_count:
+          type: integer
+          format: int64
+          description: Number of high severity violations
+          example: 8
+        medium_count:
+          type: integer
+          format: int64
+          description: Number of medium severity violations
+          example: 10
+        low_count:
+          type: integer
+          format: int64
+          description: Number of low severity violations
+          example: 5
+        max_severity_level:
+          type: integer
+          description: Maximum severity level detected (0=Low, 1=Medium, 2=High, 3=Critical)
+          example: 3
+        violation_types:
+          type: array
+          items:
+            type: integer
+          description: Array of violation type IDs detected
+          example: [1, 2, 4, 7]
+        avg_confidence:
+          type: number
+          format: float
+          description: Average confidence score
+          example: 0.87
+        max_confidence:
+          type: number
+          format: float
+          description: Maximum confidence score
+          example: 0.98
+        min_confidence:
+          type: number
+          format: float
+          description: Minimum confidence score
+          example: 0.72
+
+    HourlyViolationStats:
+      type: object
+      description: Hourly aggregated violation statistics
+      properties:
+        bucket:
+          type: string
+          format: date-time
+          description: Start time of the hour bucket
+          example: "2025-10-31T10:00:00Z"
+        total_violations:
+          type: integer
+          format: int64
+          example: 150
+        unique_attempts:
+          type: integer
+          format: int64
+          example: 8
+        unique_users:
+          type: integer
+          format: int64
+          example: 7
+        critical_count:
+          type: integer
+          format: int64
+          example: 15
+        high_count:
+          type: integer
+          format: int64
+          example: 45
+        medium_count:
+          type: integer
+          format: int64
+          example: 60
+        low_count:
+          type: integer
+          format: int64
+          example: 30
+        face_not_detected_count:
+          type: integer
+          format: int64
+          example: 20
+        multiple_faces_count:
+          type: integer
+          format: int64
+          example: 10
+        looking_away_count:
+          type: integer
+          format: int64
+          example: 55
+        hand_detected_count:
+          type: integer
+          format: int64
+          example: 30
+        switching_tab_count:
+          type: integer
+          format: int64
+          example: 25
+        fullscreen_count:
+          type: integer
+          format: int64
+          example: 10
+        prolonged_count:
+          type: integer
+          format: int64
+          example: 35
+        avg_confidence:
+          type: number
+          format: float
+          example: 0.85
+
+    DailyViolationStats:
+      type: object
+      description: Daily aggregated violation statistics
+      properties:
+        bucket:
+          type: string
+          format: date-time
+          description: Start time of the day bucket
+          example: "2025-10-31T00:00:00Z"
+        total_violations:
+          type: integer
+          format: int64
+          example: 2500
+        unique_attempts:
+          type: integer
+          format: int64
+          example: 45
+        unique_users:
+          type: integer
+          format: int64
+          example: 38
+        unique_assessments:
+          type: integer
+          format: int64
+          example: 12
+        critical_count:
+          type: integer
+          format: int64
+          example: 250
+        high_count:
+          type: integer
+          format: int64
+          example: 750
+        medium_count:
+          type: integer
+          format: int64
+          example: 1000
+        low_count:
+          type: integer
+          format: int64
+          example: 500
+        face_not_detected_count:
+          type: integer
+          format: int64
+          example: 300
+        multiple_faces_count:
+          type: integer
+          format: int64
+          example: 150
+        looking_away_count:
+          type: integer
+          format: int64
+          example: 900
+        mouth_open_count:
+          type: integer
+          format: int64
+          example: 200
+        hand_detected_count:
+          type: integer
+          format: int64
+          example: 400
+        copy_paste_count:
+          type: integer
+          format: int64
+          example: 100
+        switching_tab_count:
+          type: integer
+          format: int64
+          example: 300
+        fullscreen_count:
+          type: integer
+          format: int64
+          example: 100
+        phone_detect_count:
+          type: integer
+          format: int64
+          example: 50
+        prolonged_count:
+          type: integer
+          format: int64
+          example: 600
+        avg_duration_seconds:
+          type: number
+          format: float
+          description: Average duration of prolonged violations in seconds
+          example: 45.5
+        avg_confidence:
+          type: number
+          format: float
+          example: 0.86

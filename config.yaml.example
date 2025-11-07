@@ -1,0 +1,38 @@
+server:
+  host: 0.0.0.0
+  port: 8080
+  mode: debug # debug, release, test
+  readtimeout: 10s
+  writetimeout: 10s
+
+database:
+  host: localhost
+  port: 5432
+  user: postgres
+  password: postgres
+  dbname: protocring
+  sslmode: disable
+  maxopenconns: 25
+  maxidleconns: 5
+  connmaxlifetime: 5m
+
+redis:
+  host: localhost
+  port: 6379
+  password: ""
+  db: 0
+
+casdoor:
+  endpoint: "https://your-casdoor-domain.com"
+  clientid: "your-client-id"
+  clientsecret: "your-client-secret"
+  organization: "your-organization"
+  application: "your-application"
+  cert: |
+    -----BEGIN CERTIFICATE-----
+    YOUR_CERTIFICATE_CONTENT_HERE
+    -----END CERTIFICATE-----
+
+log:
+  level: info # debug, info, warn, error
+  format: json # json, console
