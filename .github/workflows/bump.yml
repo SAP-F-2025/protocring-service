@@ -23,7 +23,7 @@ jobs:
         with:
           doc: proctoring-api
           token: ${{secrets.BUMP_API_TOKEN}}
-          file: docs/openapi.yml
+          file: docs/openapi.yaml
   api-diff:
     if: ${{ github.event_name == 'pull_request' }}
     name: Check API diff on Bump.sh
@@ -36,7 +36,7 @@ jobs:
         with:
           doc: proctoring-api
           token: ${{secrets.BUMP_API_TOKEN}}
-          file: doc/api-documentation.yml
+          file: docs/openapi.yaml
           command: diff
         env:
           GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
