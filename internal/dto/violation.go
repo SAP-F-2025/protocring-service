@@ -12,8 +12,8 @@ type CreateViolationRequest struct {
 	AssessmentID uint64 `json:"assessment_id" binding:"required"`
 
 	// Classification
-	ViolationType   int     `json:"violation_type" binding:"required,min=0,max=23"`
-	Severity        int     `json:"severity" binding:"required,min=0,max=3"`
+	ViolationType   int     `json:"violation_type" binding:"min=0,max=23"`
+	Severity        int     `json:"severity" binding:"min=0,max=3"`
 	ConfidenceScore float64 `json:"confidence_score" binding:"min=0,max=1"`
 
 	// Evidence
@@ -24,7 +24,7 @@ type CreateViolationRequest struct {
 	DeviceFingerprint string            `json:"device_fingerprint" binding:"required"`
 	CreatedAt         time.Time         `json:"created_at" binding:"required"`
 	EndedAt           time.Time         `json:"ended_at" binding:"required"`
-	IsProlonged       bool              `json:"is_prolonged" binding:"required"`
+	IsProlonged       bool              `json:"is_prolonged"`
 }
 
 // BatchViolationRequest - for batching

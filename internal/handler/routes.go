@@ -10,6 +10,7 @@ func RegisterRoutes(
 	engine *gin.Engine,
 	healthHandler *HealthHandler,
 	violationHandler *ViolationHandler,
+	dashboardHandler *DashboardHandler,
 ) {
 	// Register health routes
 	healthHandler.RegisterRoutes(engine)
@@ -33,6 +34,25 @@ func RegisterRoutes(
 			violations.GET("/attempt/:attempt_id/latest", violationHandler.GetLatestViolation)
 			violations.GET("/analytics/:attempt_id", violationHandler.GetViolationAnalytics)
 		}
+
+		// Dashboard routes - Analytics using Continuous Aggregates
+		dashboard := v1.Group("/dashboard")
+		{
+			// Time-series stats from continuous aggregates
+			dashboard.GET("/stats/hourly", dashboardHandler.GetHourlyStats)
+			dashboard.GET("/stats/daily", dashboardHandler.GetDailyStats)
+
+			// Attempt analytics
+			dashboard.GET("/attempts/:attempt_id/summary", dashboardHandler.GetAttemptSummary)
+			dashboard.GET("/attempts/summaries", dashboardHandler.GetAttemptSummaries)
+
+			// User analytics
+			dashboard.GET("/users/:user_id/patterns", dashboardHandler.GetUserPatterns)
+
+			// Overview and real-time
+			dashboard.GET("/overview", dashboardHandler.GetDashboardOverview)
+			dashboard.GET("/realtime", dashboardHandler.GetRealTimeStats)
+		}
 	}
 }
 
@@ -40,5 +60,6 @@ func RegisterRoutes(
 var Module = fx.Options(
 	fx.Provide(NewHealthHandler),
 	fx.Provide(NewViolationHandler),
+	fx.Provide(NewDashboardHandler),
 	fx.Invoke(RegisterRoutes),
 )

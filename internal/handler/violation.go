@@ -134,14 +134,14 @@ func (h *ViolationHandler) GetViolationsByAttempt(c *gin.Context) {
 	}
 
 	// Parse pagination params
-	limit := parseIntQuery(c, "limit", 20)
-	offset := parseIntQuery(c, "offset", 0)
+	page := parseIntQuery(c, "page", 1)
+	pageSize := parseIntQuery(c, "pageSize", 10)
 
 	violations, err := h.violationService.GetViolationsByAttempt(
 		c.Request.Context(),
 		attemptID,
-		limit,
-		offset,
+		pageSize,
+		(page-1)*pageSize,
 	)
 	if err != nil {
 		h.logger.Error("Failed to get violations",
@@ -156,10 +156,8 @@ func (h *ViolationHandler) GetViolationsByAttempt(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, ViolationListResponse{
-		Data:   violations,
-		Count:  len(violations),
-		Limit:  limit,
-		Offset: offset,
+		Data:  violations,
+		Count: len(violations),
 	})
 }
 
@@ -267,8 +265,8 @@ type ErrorResponse struct {
 }
 
 type BatchResponse struct {
-	Success bool                     `json:"success"`
-	Count   int                      `json:"count"`
+	Success bool                    `json:"success"`
+	Count   int                     `json:"count"`
 	Data    []dto.ViolationResponse `json:"data"`
 }
 

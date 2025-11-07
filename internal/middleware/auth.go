@@ -1,11 +1,12 @@
 package middleware
 
 import (
-	"github.com/casdoor/casdoor-go-sdk/casdoorsdk"
-	"github.com/gin-gonic/gin"
 	"net/http"
 	"protocring-service/internal/config"
 	"strings"
+
+	"github.com/casdoor/casdoor-go-sdk/casdoorsdk"
+	"github.com/gin-gonic/gin"
 )
 
 // CasdoorAuthMiddleware provides authentication using Casdoor SDK
@@ -33,6 +34,15 @@ func NewCasdoorAuthMiddleware(cfg *config.Config) *CasdoorAuthMiddleware {
 
 func (cam *CasdoorAuthMiddleware) AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// Skip authentication for public endpoints
+		publicPaths := []string{"/health", "/ready"}
+		for _, path := range publicPaths {
+			if c.Request.URL.Path == path {
+				c.Next()
+				return
+			}
+		}
+
 		// Extract token from header
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {

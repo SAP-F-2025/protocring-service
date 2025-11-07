@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net/http"
 	"protocring-service/internal/config"
 	"protocring-service/internal/handler"
 	"protocring-service/internal/middleware"
@@ -41,6 +42,9 @@ func main() {
 
 		// Provide handlers and register routes
 		handler.Module,
+
+		// Invoke HTTP server to ensure it starts
+		fx.Invoke(func(*http.Server) {}),
 
 		// Configure fx logger
 		fx.WithLogger(func(logger *zap.Logger) fxevent.Logger {

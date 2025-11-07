@@ -107,12 +107,14 @@ COMMENT ON MATERIALIZED VIEW violation_stats_daily IS
     'Daily violation statistics for trend analysis and reporting';
 
 -- ----------------------------------------------------------------------------
--- 3. Per-Attempt Violation Summary
+-- 3. Per-Attempt Violation Summary (Regular View - Not Continuous Aggregate)
 -- ----------------------------------------------------------------------------
--- Aggregates all violations for each attempt
+-- Note: This is a regular view, NOT a continuous aggregate because:
+-- - It groups by attempt_id (not time_bucket)
+-- - Continuous aggregates require time_bucket() function
+-- - Query is fast enough with existing indexes (idx_violation_attempt)
 -- Use case: Attempt result calculation, integrity scoring
-CREATE MATERIALIZED VIEW violation_attempt_summary
-WITH (timescaledb.continuous) AS
+CREATE OR REPLACE VIEW violation_attempt_summary AS
 SELECT
     attempt_id,
     user_id,
@@ -121,7 +123,7 @@ SELECT
     -- Time range
     MIN(created_at) AS first_violation_at,
     MAX(created_at) AS last_violation_at,
-    MAX(created_at) - MIN(created_at) AS duration,
+    EXTRACT(EPOCH FROM (MAX(created_at) - MIN(created_at))) AS duration_seconds,
 
     -- Counts
     COUNT(*) AS total_violations,
@@ -146,20 +148,10 @@ SELECT
     MIN(confidence_score) AS min_confidence
 FROM violation_logs
 WHERE created_at > NOW() - INTERVAL '30 days'  -- Only recent attempts
-GROUP BY attempt_id, user_id, assessment_id
-WITH NO DATA;
+GROUP BY attempt_id, user_id, assessment_id;
 
--- Refresh policy: refresh last 24 hours every hour
-SELECT add_continuous_aggregate_policy(
-    'violation_attempt_summary',
-    start_offset => INTERVAL '24 hours',
-    end_offset => INTERVAL '1 hour',
-    schedule_interval => INTERVAL '1 hour',
-    if_not_exists => TRUE
-);
-
-COMMENT ON MATERIALIZED VIEW violation_attempt_summary IS
-    'Per-attempt violation summary for integrity scoring';
+COMMENT ON VIEW violation_attempt_summary IS
+    'Per-attempt violation summary for integrity scoring (regular view, queries real-time data)';
 
 -- ----------------------------------------------------------------------------
 -- 4. User Violation Patterns
@@ -214,19 +206,19 @@ COMMENT ON MATERIALIZED VIEW violation_user_patterns IS
     'Daily user violation patterns for behavior analysis';
 
 -- ----------------------------------------------------------------------------
--- Create indexes on materialized views for faster queries
+-- Create indexes on continuous aggregates for faster queries
 -- ----------------------------------------------------------------------------
+-- Note: violation_attempt_summary is a regular view, so no indexes needed
+-- (it uses indexes from the underlying violation_logs table)
 CREATE INDEX idx_hourly_bucket ON violation_stats_hourly (bucket DESC);
 CREATE INDEX idx_daily_bucket ON violation_stats_daily (bucket DESC);
-CREATE INDEX idx_attempt_summary_attempt ON violation_attempt_summary (attempt_id);
-CREATE INDEX idx_attempt_summary_user ON violation_attempt_summary (user_id);
 CREATE INDEX idx_user_patterns_user ON violation_user_patterns (user_id, bucket DESC);
 
 -- ----------------------------------------------------------------------------
 -- Initial refresh (populate with existing data)
 -- ----------------------------------------------------------------------------
 -- Note: This might take some time if there's a lot of existing data
+-- violation_attempt_summary is not included as it's a regular view (queries real-time)
 CALL refresh_continuous_aggregate('violation_stats_hourly', NULL, NULL);
 CALL refresh_continuous_aggregate('violation_stats_daily', NULL, NULL);
-CALL refresh_continuous_aggregate('violation_attempt_summary', NULL, NULL);
 CALL refresh_continuous_aggregate('violation_user_patterns', NULL, NULL);

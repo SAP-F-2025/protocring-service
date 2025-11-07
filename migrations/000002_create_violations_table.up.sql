@@ -1,6 +1,6 @@
 -- Create violations table
 CREATE TABLE IF NOT EXISTS violation_logs (
-    id BIGSERIAL PRIMARY KEY,
+    id BIGSERIAL NOT NULL,
     attempt_id BIGINT NOT NULL,
     user_id VARCHAR(255) NOT NULL,
     assessment_id BIGINT NOT NULL,
@@ -20,17 +20,23 @@ CREATE TABLE IF NOT EXISTS violation_logs (
     -- Timestamps
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     ended_at TIMESTAMPTZ,
-    is_prolonged BOOLEAN NOT NULL DEFAULT FALSE
+    is_prolonged BOOLEAN NOT NULL DEFAULT FALSE,
+
+    -- Composite primary key including partitioning column
+    -- Required by TimescaleDB when using created_at as partition key
+    PRIMARY KEY (id, created_at)
 );
 
 -- Create indexes
 CREATE INDEX idx_violation_attempt ON violation_logs (attempt_id, created_at DESC);
 CREATE INDEX idx_violation_user ON violation_logs (user_id, created_at DESC);
 CREATE INDEX idx_violation_assessment ON violation_logs (assessment_id, created_at DESC);
-CREATE INDEX idx_violation_type ON violation_logs (violation_type);
-CREATE INDEX idx_violation_severity ON violation_logs (severity);
 CREATE INDEX idx_violation_timestamp ON violation_logs (created_at DESC);
 CREATE INDEX idx_violation_prolonged ON violation_logs (is_prolonged) WHERE is_prolonged = TRUE;
+
+-- Composite index for user-specific violation type queries
+-- Supports: filtering by user + violation type + time range
+CREATE INDEX idx_violation_user_type ON violation_logs (user_id, violation_type, created_at DESC);
 
 -- Create GIN index for JSONB field for faster queries
 CREATE INDEX idx_violation_browser_info ON violation_logs USING GIN (browser_info);
@@ -42,6 +48,15 @@ SELECT create_hypertable(
     'created_at',
     chunk_time_interval => INTERVAL '1 day',
     if_not_exists => TRUE
+);
+
+-- Enable compression with segmentby and orderby
+-- segmentby: Group data by these columns (low cardinality columns for better compression)
+-- orderby: Sort data within segments (time column for better compression ratio)
+ALTER TABLE violation_logs SET (
+    timescaledb.compress,
+    timescaledb.compress_segmentby = 'attempt_id,user_id,violation_type,severity',
+    timescaledb.compress_orderby = 'created_at DESC'
 );
 
 -- Add compression policy

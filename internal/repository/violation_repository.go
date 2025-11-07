@@ -41,6 +41,29 @@ type ViolationRepositoryInterface interface {
 
 	// DeleteOldViolations deletes violations older than retention period
 	DeleteOldViolations(ctx context.Context, olderThan time.Duration) (int64, error)
+
+	// Dashboard Analytics Methods using Continuous Aggregates
+
+	// GetHourlyStats gets hourly violation statistics from continuous aggregate
+	GetHourlyStats(ctx context.Context, startTime, endTime time.Time) ([]*model.HourlyViolationStats, error)
+
+	// GetDailyStats gets daily violation statistics from continuous aggregate
+	GetDailyStats(ctx context.Context, startTime, endTime time.Time) ([]*model.DailyViolationStats, error)
+
+	// GetAttemptSummary gets violation summary for a specific attempt
+	GetAttemptSummary(ctx context.Context, attemptID uint64) (*model.AttemptViolationSummary, error)
+
+	// GetAttemptSummaries gets violation summaries for multiple attempts
+	GetAttemptSummaries(ctx context.Context, attemptIDs []uint64) ([]*model.AttemptViolationSummary, error)
+
+	// GetUserPatterns gets daily violation patterns for a specific user
+	GetUserPatterns(ctx context.Context, userID string, startTime, endTime time.Time) ([]*model.UserViolationPattern, error)
+
+	// GetDashboardOverview gets high-level dashboard metrics
+	GetDashboardOverview(ctx context.Context, startTime, endTime time.Time) (*model.DashboardOverview, error)
+
+	// GetRealTimeStats gets real-time violation statistics
+	GetRealTimeStats(ctx context.Context) (*model.RealTimeStats, error)
 }
 
 // ViolationTimelineBucket represents aggregated violations in a time bucket
