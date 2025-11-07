@@ -6,58 +6,40 @@ CREATE TABLE IF NOT EXISTS violation_logs (
     assessment_id BIGINT NOT NULL,
 
     -- Classification
-    violation_type VARCHAR(50) NOT NULL,
-    severity VARCHAR(20) NOT NULL,
-    confidence_score DECIMAL(5,4),
-
-    -- MediaPipe detection data (JSONB)
-    detection_data JSONB NOT NULL,
-
-    -- Extracted metrics (denormalized for fast queries)
-    face_count INT,
-    hand_count INT,
-    head_pose_yaw DOUBLE PRECISION,
-    head_pose_pitch DOUBLE PRECISION,
-    head_pose_roll DOUBLE PRECISION,
-    gaze_direction VARCHAR(50),
-    mouth_open_ratio DOUBLE PRECISION,
-
-    -- Frame metadata
-    frame_number INT,
-    frame_timestamp BIGINT,
-    fps INT,
-    resolution VARCHAR(50),
+    violation_type INT NOT NULL,
+    severity INT NOT NULL,
+    confidence_score DOUBLE PRECISION,
 
     -- Evidence
     snapshot_url TEXT,
-    video_segment_url TEXT,
 
     -- Context
     browser_info JSONB,
     device_fingerprint VARCHAR(255),
 
     -- Timestamps
-    client_timestamp TIMESTAMPTZ NOT NULL,
-    server_timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ended_at TIMESTAMPTZ,
+    is_prolonged BOOLEAN NOT NULL DEFAULT FALSE
 );
 
 -- Create indexes
-CREATE INDEX idx_violation_attempt ON violation_logs (attempt_id, server_timestamp DESC);
-CREATE INDEX idx_violation_user ON violation_logs (user_id, server_timestamp DESC);
+CREATE INDEX idx_violation_attempt ON violation_logs (attempt_id, created_at DESC);
+CREATE INDEX idx_violation_user ON violation_logs (user_id, created_at DESC);
+CREATE INDEX idx_violation_assessment ON violation_logs (assessment_id, created_at DESC);
 CREATE INDEX idx_violation_type ON violation_logs (violation_type);
 CREATE INDEX idx_violation_severity ON violation_logs (severity);
-CREATE INDEX idx_violation_timestamp ON violation_logs (server_timestamp DESC);
+CREATE INDEX idx_violation_timestamp ON violation_logs (created_at DESC);
+CREATE INDEX idx_violation_prolonged ON violation_logs (is_prolonged) WHERE is_prolonged = TRUE;
 
--- Create GIN indexes for JSONB fields for faster queries
-CREATE INDEX idx_violation_detection_data ON violation_logs USING GIN (detection_data);
+-- Create GIN index for JSONB field for faster queries
 CREATE INDEX idx_violation_browser_info ON violation_logs USING GIN (browser_info);
 
--- Convert to hypertable (partitioned by server_timestamp)
+-- Convert to hypertable (partitioned by created_at)
 -- Chunk interval: 1 day (violations are time-series data)
 SELECT create_hypertable(
     'violation_logs',
-    'server_timestamp',
+    'created_at',
     chunk_time_interval => INTERVAL '1 day',
     if_not_exists => TRUE
 );
@@ -78,5 +60,8 @@ SELECT add_retention_policy(
     if_not_exists => TRUE
 );
 
--- Add refresh policy comments for continuous aggregates (created in next migration)
-COMMENT ON TABLE violation_logs IS 'Stores MediaPipe violation detection events as time-series data';
+-- Add table comment
+COMMENT ON TABLE violation_logs IS 'Stores violation detection events as time-series data';
+COMMENT ON COLUMN violation_logs.violation_type IS 'Type of violation (0-14): FaceNotDetected, MultipleFaces, LookingAway, etc.';
+COMMENT ON COLUMN violation_logs.severity IS 'Severity level (0-3): Low, Medium, High, Critical';
+COMMENT ON COLUMN violation_logs.is_prolonged IS 'Indicates if violation lasted longer than threshold';
