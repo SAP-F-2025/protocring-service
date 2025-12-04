@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/spf13/viper"
@@ -13,6 +14,7 @@ type Config struct {
 	Redis    RedisConfig
 	Log      LogConfig
 	Casdoor  CasdoorConfig
+	Worker   WorkerConfig
 }
 
 type ServerConfig struct {
@@ -56,6 +58,17 @@ type CasdoorConfig struct {
 	Organization string
 }
 
+type WorkerConfig struct {
+	Enabled       bool          // Feature flag to enable/disable workers
+	StreamName    string        // Redis stream name for violations
+	ConsumerGroup string        // Consumer group name
+	NumWorkers    int           // Number of worker goroutines
+	BatchSize     int           // Batch size for flushing
+	FlushInterval time.Duration // Time interval to flush batch
+	MaxRetries    int           // Maximum retry attempts for failed messages
+	StreamMaxLen  int64         // Maximum stream length for memory management
+}
+
 // Load reads configuration from file or environment variables.
 func Load() (*Config, error) {
 	viper.SetConfigName("config")
@@ -65,6 +78,9 @@ func Load() (*Config, error) {
 
 	// Enable environment variable override
 	viper.AutomaticEnv()
+	// Replace underscores with dots in env var names
+	// This allows SERVER_HOST to map to server.host, DATABASE_PORT to database.port, etc.
+	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 
 	// Set defaults
 	setDefaults()
@@ -119,4 +135,14 @@ func setDefaults() {
 	viper.SetDefault("casdoor.clientid", "")
 	viper.SetDefault("casdoor.clientsecret", "")
 	viper.SetDefault("casdoor.cert", "")
+
+	// Worker defaults
+	viper.SetDefault("worker.enabled", true)
+	viper.SetDefault("worker.streamname", "violations:ingest")
+	viper.SetDefault("worker.consumergroup", "violation-workers")
+	viper.SetDefault("worker.numworkers", 3)
+	viper.SetDefault("worker.batchsize", 750)
+	viper.SetDefault("worker.flushinterval", 12*time.Second)
+	viper.SetDefault("worker.maxretries", 3)
+	viper.SetDefault("worker.streammaxlen", 100000)
 }

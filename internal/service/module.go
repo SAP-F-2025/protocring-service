@@ -9,7 +9,7 @@ var Module = fx.Options(
 	fx.Provide(
 		NewHealthService,
 		fx.Annotate(
-			NewViolationService,
+			NewViolationServiceFactory,
 			fx.As(new(ViolationServiceInterface)),
 		),
 	),

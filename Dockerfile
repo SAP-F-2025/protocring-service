@@ -1,5 +1,5 @@
 # Build stage
-FROM golang:1.22-alpine AS builder
+FROM golang:1.24.6-alpine AS builder
 
 # Install build dependencies
 RUN apk add --no-cache git make
@@ -29,9 +29,6 @@ WORKDIR /root/
 
 # Copy the binary from builder
 COPY --from=builder /app/server .
-
-# Copy config file (optional)
-COPY --from=builder /app/config.yaml.example ./config.yaml
 
 # Expose port
 EXPOSE 8080
