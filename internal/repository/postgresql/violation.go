@@ -11,6 +11,7 @@ import (
 	"protocring-service/internal/model"
 
 	"github.com/jmoiron/sqlx"
+	"github.com/lib/pq"
 )
 
 // ViolationRepository handles violation data operations
@@ -572,7 +573,7 @@ func (r *ViolationRepository) GetAttemptSummaries(ctx context.Context, attemptID
 	`
 
 	var summaries []*model.AttemptViolationSummary
-	err := r.db.SelectContext(ctx, &summaries, query, attemptIDs)
+	err := r.db.SelectContext(ctx, &summaries, query, pq.Array(attemptIDs))
 	if err != nil {
 		return nil, fmt.Errorf("failed to get attempt summaries: %w", err)
 	}
