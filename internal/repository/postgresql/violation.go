@@ -11,6 +11,7 @@ import (
 	"protocring-service/internal/model"
 
 	"github.com/jmoiron/sqlx"
+	"github.com/lib/pq"
 )
 
 // ViolationRepository handles violation data operations
@@ -191,7 +192,9 @@ func (r *ViolationRepository) FindByAttemptID(ctx context.Context, attemptID uin
 		}
 
 		// Unmarshal JSONB field
-		json.Unmarshal(browserInfoJSON, &v.BrowserInfo)
+		if err := json.Unmarshal(browserInfoJSON, &v.BrowserInfo); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal browser_info: %w", err)
+		}
 
 		violations = append(violations, &v)
 	}
@@ -206,7 +209,8 @@ func (r *ViolationRepository) FindByUserID(ctx context.Context, userID string, s
 			id, attempt_id, user_id, assessment_id,
 			violation_type, severity, confidence_score,
 			snapshot_url,
-			created_at
+			browser_info, device_fingerprint,
+			created_at, ended_at, is_prolonged
 		FROM violation_logs
 		WHERE user_id = $1
 		  AND created_at >= $2
@@ -224,10 +228,28 @@ func (r *ViolationRepository) FindByUserID(ctx context.Context, userID string, s
 	var violations []*model.ViolationLog
 	for rows.Next() {
 		var v model.ViolationLog
-		err := rows.StructScan(&v)
+		var browserInfoJSON []byte
+		var endedAt sql.NullTime
+
+		err := rows.Scan(
+			&v.ID, &v.AttemptID, &v.UserID, &v.AssessmentID,
+			&v.ViolationType, &v.Severity, &v.ConfidenceScore,
+			&v.SnapshotURL,
+			&browserInfoJSON, &v.DeviceFingerprint,
+			&v.CreatedAt, &endedAt, &v.IsProlonged,
+		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan violation: %w", err)
 		}
+
+		if err := json.Unmarshal(browserInfoJSON, &v.BrowserInfo); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal browser_info: %w", err)
+		}
+
+		if endedAt.Valid {
+			v.EndedAt = endedAt.Time
+		}
+
 		violations = append(violations, &v)
 	}
 
@@ -240,7 +262,9 @@ func (r *ViolationRepository) FindByTimeRange(ctx context.Context, startTime, en
 		SELECT
 			id, attempt_id, user_id, assessment_id,
 			violation_type, severity, confidence_score,
-			snapshot_url, created_at
+			snapshot_url,
+			browser_info, device_fingerprint,
+			created_at, ended_at, is_prolonged
 		FROM violation_logs
 		WHERE created_at >= $1 AND created_at <= $2
 	`
@@ -273,10 +297,28 @@ func (r *ViolationRepository) FindByTimeRange(ctx context.Context, startTime, en
 	var violations []*model.ViolationLog
 	for rows.Next() {
 		var v model.ViolationLog
-		err := rows.StructScan(&v)
+		var browserInfoJSON []byte
+		var endedAt sql.NullTime
+
+		err := rows.Scan(
+			&v.ID, &v.AttemptID, &v.UserID, &v.AssessmentID,
+			&v.ViolationType, &v.Severity, &v.ConfidenceScore,
+			&v.SnapshotURL,
+			&browserInfoJSON, &v.DeviceFingerprint,
+			&v.CreatedAt, &endedAt, &v.IsProlonged,
+		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan violation: %w", err)
 		}
+
+		if err := json.Unmarshal(browserInfoJSON, &v.BrowserInfo); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal browser_info: %w", err)
+		}
+
+		if endedAt.Valid {
+			v.EndedAt = endedAt.Time
+		}
+
 		violations = append(violations, &v)
 	}
 
@@ -289,20 +331,41 @@ func (r *ViolationRepository) GetLatestByAttempt(ctx context.Context, attemptID 
 		SELECT
 			id, attempt_id, user_id, assessment_id,
 			violation_type, severity, confidence_score,
-			snapshot_url, created_at
+			snapshot_url,
+			browser_info, device_fingerprint,
+			created_at, ended_at, is_prolonged
 		FROM violation_logs
 		WHERE attempt_id = $1
 		ORDER BY created_at DESC
 		LIMIT 1
 	`
 
+	row := r.db.QueryRowxContext(ctx, query, attemptID)
+
 	var v model.ViolationLog
-	err := r.db.GetContext(ctx, &v, query, attemptID)
+	var browserInfoJSON []byte
+	var endedAt sql.NullTime
+
+	err := row.Scan(
+		&v.ID, &v.AttemptID, &v.UserID, &v.AssessmentID,
+		&v.ViolationType, &v.Severity, &v.ConfidenceScore,
+		&v.SnapshotURL,
+		&browserInfoJSON, &v.DeviceFingerprint,
+		&v.CreatedAt, &endedAt, &v.IsProlonged,
+	)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("failed to get latest violation: %w", err)
+	}
+
+	if err := json.Unmarshal(browserInfoJSON, &v.BrowserInfo); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal browser_info: %w", err)
+	}
+
+	if endedAt.Valid {
+		v.EndedAt = endedAt.Time
 	}
 
 	return &v, nil
@@ -353,7 +416,7 @@ func (r *ViolationRepository) CountByType(ctx context.Context, attemptID uint64)
 func (r *ViolationRepository) GetViolationTimeline(ctx context.Context, attemptID uint64, bucketSize time.Duration) ([]repository.ViolationTimelineBucket, error) {
 	query := `
 		SELECT
-			time_bucket($1, created_at) AS bucket,
+			time_bucket($1::interval, created_at) AS bucket,
 			COUNT(*) AS violation_count,
 			COUNT(*) FILTER (WHERE severity = 3) AS critical_count,
 			COUNT(*) FILTER (WHERE severity = 2) AS high_count,
@@ -365,7 +428,7 @@ func (r *ViolationRepository) GetViolationTimeline(ctx context.Context, attemptI
 		ORDER BY bucket ASC
 	`
 
-	rows, err := r.db.QueryxContext(ctx, query, bucketSize.String(), attemptID)
+	rows, err := r.db.QueryxContext(ctx, query, formatDurationForPostgres(bucketSize), attemptID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get timeline: %w", err)
 	}
@@ -382,6 +445,21 @@ func (r *ViolationRepository) GetViolationTimeline(ctx context.Context, attemptI
 	}
 
 	return timeline, nil
+}
+
+// formatDurationForPostgres converts time.Duration to PostgreSQL interval string
+func formatDurationForPostgres(d time.Duration) string {
+	hours := int(d.Hours())
+	minutes := int(d.Minutes()) % 60
+	seconds := int(d.Seconds()) % 60
+
+	if hours > 0 {
+		return fmt.Sprintf("%d hours", hours)
+	}
+	if minutes > 0 {
+		return fmt.Sprintf("%d minutes", minutes)
+	}
+	return fmt.Sprintf("%d seconds", seconds)
 }
 
 // GetSeverityDistribution gets severity distribution for an attempt
@@ -572,7 +650,7 @@ func (r *ViolationRepository) GetAttemptSummaries(ctx context.Context, attemptID
 	`
 
 	var summaries []*model.AttemptViolationSummary
-	err := r.db.SelectContext(ctx, &summaries, query, attemptIDs)
+	err := r.db.SelectContext(ctx, &summaries, query, pq.Array(attemptIDs))
 	if err != nil {
 		return nil, fmt.Errorf("failed to get attempt summaries: %w", err)
 	}
