@@ -33,16 +33,12 @@ type ViolationWorkerParams struct {
 
 // NewViolationWorker creates a ViolationWorker with FX dependency injection
 func NewViolationWorker(p ViolationWorkerParams) *ViolationWorker {
-	worker := &ViolationWorker{
-		config:   &p.Config.Worker,
-		producer: streams.NewProducer(p.RedisClient),
-		repo:     p.Repo,
-		logger:   p.Logger.With(zap.String("component", "violation_worker")),
-		shutdown: make(chan struct{}),
+	return &ViolationWorker{
+		config:      &p.Config.Worker,
+		redisClient: p.RedisClient,
+		producer:    streams.NewProducer(p.RedisClient),
+		repo:        p.Repo,
+		logger:      p.Logger.With(zap.String("component", "violation_worker")),
+		shutdown:    make(chan struct{}),
 	}
-
-	// Initialize consumer
-	worker.initConsumer(p.RedisClient, &p.Config.Worker)
-
-	return worker
 }

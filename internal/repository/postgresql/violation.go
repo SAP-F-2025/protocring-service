@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/lib/pq"
 	"protocring-service/internal/repository"
 	"time"
 
@@ -572,7 +573,7 @@ func (r *ViolationRepository) GetAttemptSummaries(ctx context.Context, attemptID
 	`
 
 	var summaries []*model.AttemptViolationSummary
-	err := r.db.SelectContext(ctx, &summaries, query, attemptIDs)
+	err := r.db.SelectContext(ctx, &summaries, query, pq.Array(attemptIDs))
 	if err != nil {
 		return nil, fmt.Errorf("failed to get attempt summaries: %w", err)
 	}

@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -20,67 +21,66 @@ import (
 
 // ViolationWorker handles consuming violations from Redis Stream and inserting to DB
 type ViolationWorker struct {
-	config   *config.WorkerConfig
-	consumer *streams.Consumer
-	producer *streams.Producer // For DLQ
-	repo     repository.ViolationRepositoryInterface
-	logger   *zap.Logger
+	config      *config.WorkerConfig
+	redisClient *redis.Client
+	producer    *streams.Producer // For DLQ
+	repo        repository.ViolationRepositoryInterface
+	logger      *zap.Logger
 
 	wg       sync.WaitGroup
 	shutdown chan struct{}
 }
 
-// initConsumer initializes the consumer for the worker
-func (w *ViolationWorker) initConsumer(redisClient *redis.Client, cfg *config.WorkerConfig) {
-	hostname, _ := os.Hostname()
-	consumerName := fmt.Sprintf("worker-%s-%d", hostname, os.Getpid())
-
-	consumer := streams.NewConsumer(redisClient, w.logger, streams.ConsumerConfig{
-		Group:        cfg.ConsumerGroup,
-		Consumer:     consumerName,
-		Streams:      []string{cfg.StreamName},
-		BatchSize:    cfg.BatchSize,
-		BlockTime:    cfg.BlockTime,
-		Handler:      w.processMessage,
-		ErrorHandler: w.handleError,
-	})
-
-	w.consumer = consumer
-}
-
 // Start starts the worker
 func (w *ViolationWorker) Start(ctx context.Context) error {
-	w.logger.Info("Starting violation worker",
+	w.logger.Info("Starting violation workers",
 		zap.String("stream", w.config.StreamName),
 		zap.String("consumer_group", w.config.ConsumerGroup),
 		zap.Int("num_workers", w.config.NumWorkers),
 	)
 
-	// Create consumer group if not exists
-	if err := w.consumer.CreateConsumerGroup(ctx, w.config.StreamName, w.config.ConsumerGroup, ">"); err != nil {
+	// Create consumer group once (before starting workers)
+	// Call Redis directly instead of creating temp consumer
+	err := w.redisClient.XGroupCreateMkStream(ctx, w.config.StreamName, w.config.ConsumerGroup, ">").Err()
+	if err != nil && err.Error() != "BUSYGROUP Consumer Group name already exists" {
 		return fmt.Errorf("failed to create consumer group: %w", err)
 	}
 
-	// Start multiple workers
+	hostname, _ := os.Hostname()
+
+	// Start multiple workers, each with its own consumer
 	for i := 0; i < w.config.NumWorkers; i++ {
 		w.wg.Add(1)
-		go func(workerID int) {
+
+		// Create unique consumer for this worker
+		consumerName := fmt.Sprintf("worker-%s-%d-%d", hostname, os.Getpid(), i)
+		consumer := streams.NewConsumer(w.redisClient, w.logger, streams.ConsumerConfig{
+			Group:        w.config.ConsumerGroup,
+			Consumer:     consumerName,
+			Streams:      []string{w.config.StreamName},
+			BatchSize:    w.config.BatchSize,
+			BlockTime:    w.config.BlockTime,
+			Handler:      w.processMessage,
+			ErrorHandler: w.handleError,
+		})
+
+		go func(workerID int, cons *streams.Consumer) {
 			defer w.wg.Done()
-			w.runWorker(ctx, workerID)
-		}(i)
+			w.runWorker(ctx, workerID, cons)
+		}(i, consumer)
 	}
 
-	w.logger.Info("Violation worker started successfully")
+	w.logger.Info("Violation workers started successfully")
 	return nil
 }
 
-// runWorker runs a single worker goroutine
-func (w *ViolationWorker) runWorker(ctx context.Context, workerID int) {
+// runWorker runs a single worker goroutine with its own consumer
+func (w *ViolationWorker) runWorker(ctx context.Context, workerID int, consumer *streams.Consumer) {
 	logger := w.logger.With(zap.Int("worker_id", workerID))
 	logger.Info("Worker goroutine started")
 
-	if err := w.consumer.Start(ctx); err != nil {
-		if err != context.Canceled {
+	if err := consumer.Start(ctx); err != nil {
+		if !errors.Is(err, context.Canceled) {
 			logger.Error("Worker stopped with error", zap.Error(err))
 		}
 	}
@@ -186,14 +186,28 @@ func (w *ViolationWorker) sendToDLQ(ctx context.Context, msg redis.XMessage, ori
 	return err
 }
 
-// getRetryCount extracts retry count from message metadata
+// getRetryCount gets the actual delivery count from Redis XPENDING
+// This is the true retry count, not stored in message data
 func (w *ViolationWorker) getRetryCount(msg redis.XMessage) int {
-	if retryCountStr, ok := msg.Values["retry_count"].(string); ok {
-		var count int
-		fmt.Sscanf(retryCountStr, "%d", &count)
-		return count
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// Get pending info for this specific message
+	pending, err := w.redisClient.XPendingExt(ctx, &redis.XPendingExtArgs{
+		Stream: w.config.StreamName,
+		Group:  w.config.ConsumerGroup,
+		Start:  msg.ID,
+		End:    msg.ID,
+		Count:  1,
+	}).Result()
+
+	if err != nil || len(pending) == 0 {
+		// If can't get pending info, assume first attempt
+		return 0
 	}
-	return 0
+
+	// DeliveryCount - 1 = retry count (delivery 1 = attempt 0, delivery 2 = retry 1, etc)
+	return int(pending[0].RetryCount)
 }
 
 // handleError handles errors during message processing

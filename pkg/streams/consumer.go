@@ -260,6 +260,11 @@ func (c *Consumer) DeleteConsumerGroup(ctx context.Context, stream string) error
 	return nil
 }
 
+// GetClient returns the underlying Redis client for advanced operations
+func (c *Consumer) GetClient() *redis.Client {
+	return c.client
+}
+
 // UnmarshalJSON is a helper to unmarshal JSON payload from a message
 func UnmarshalJSON(msg redis.XMessage, dest interface{}) error {
 	payload, ok := msg.Values["payload"].(string)
