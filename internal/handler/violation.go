@@ -65,7 +65,7 @@ func (h *ViolationHandler) IngestViolation(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusCreated, response)
+	c.JSON(http.StatusAccepted, response)
 }
 
 // IngestBatch godoc
@@ -104,7 +104,7 @@ func (h *ViolationHandler) IngestBatch(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusCreated, BatchResponse{
+	c.JSON(http.StatusAccepted, BatchResponse{
 		Success: true,
 		Count:   len(responses),
 		Data:    responses,

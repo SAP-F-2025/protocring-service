@@ -34,7 +34,7 @@ type BatchViolationRequest struct {
 
 // ViolationResponse - API response
 type ViolationResponse struct {
-	ID              uint64    `json:"id"`
+	ID              uint64    `json:"id,omitempty"`
 	AttemptID       uint64    `json:"attempt_id"`
 	UserID          string    `json:"user_id"`
 	AssessmentID    uint64    `json:"assessment_id"`
@@ -44,7 +44,8 @@ type ViolationResponse struct {
 	SeverityName    string    `json:"severity_name"`
 	ConfidenceScore float64   `json:"confidence_score"`
 	CreatedAt       time.Time `json:"created_at"`
-	Status          string    `json:"status"`
+	Status          string    `json:"status"`               // "queued", "processing", "processed", "failed"
+	MessageID       string    `json:"message_id,omitempty"` // Redis Stream message ID
 }
 
 // Helper functions to convert violation type and severity to names
