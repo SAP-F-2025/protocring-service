@@ -2,12 +2,15 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
+	"protocring-service/internal/config"
 	"protocring-service/internal/dto"
 	"protocring-service/internal/model"
 	"protocring-service/internal/repository"
+	"protocring-service/pkg/streams"
 
 	"go.uber.org/zap"
 )
@@ -38,15 +41,24 @@ type ViolationServiceInterface interface {
 
 // ViolationService implements ViolationServiceInterface
 type ViolationService struct {
-	repo   repository.ViolationRepositoryInterface
-	logger *zap.Logger
+	repo     repository.ViolationRepositoryInterface
+	producer *streams.Producer
+	config   *config.Config
+	logger   *zap.Logger
 }
 
 // NewViolationService creates a new violation service
-func NewViolationService(repo repository.ViolationRepositoryInterface, logger *zap.Logger) *ViolationService {
+func NewViolationService(
+	repo repository.ViolationRepositoryInterface,
+	producer *streams.Producer,
+	config *config.Config,
+	logger *zap.Logger,
+) *ViolationService {
 	return &ViolationService{
-		repo:   repo,
-		logger: logger,
+		repo:     repo,
+		producer: producer,
+		config:   config,
+		logger:   logger,
 	}
 }
 
@@ -57,27 +69,37 @@ func (s *ViolationService) IngestViolation(ctx context.Context, req *dto.CreateV
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 
-	// Convert DTO to model
-	violation := s.dtoToModel(req)
-
-	// Insert to database
-	if err := s.repo.Insert(ctx, violation); err != nil {
-		s.logger.Error("Failed to insert violation",
+	// Publish to Redis Stream for async processing
+	messageID, err := s.producer.PublishJSON(ctx, s.config.Worker.StreamName, req, nil)
+	if err != nil {
+		s.logger.Error("Failed to publish violation to stream",
 			zap.Uint64("attempt_id", req.AttemptID),
 			zap.Int("violation_type", req.ViolationType),
 			zap.Error(err),
 		)
-		return nil, fmt.Errorf("failed to insert violation: %w", err)
+		return nil, fmt.Errorf("failed to publish violation: %w", err)
 	}
 
-	s.logger.Info("Violation ingested successfully",
-		zap.Uint64("violation_id", violation.ID),
-		zap.Uint64("attempt_id", violation.AttemptID),
-		zap.Int("violation_type", violation.ViolationType),
-		zap.Int("severity", violation.Severity),
+	s.logger.Info("Violation queued successfully",
+		zap.String("message_id", messageID),
+		zap.Uint64("attempt_id", req.AttemptID),
+		zap.Int("violation_type", req.ViolationType),
+		zap.Int("severity", req.Severity),
 	)
 
-	return s.modelToResponse(violation), nil
+	return &dto.ViolationResponse{
+		AttemptID:       req.AttemptID,
+		UserID:          req.UserID,
+		AssessmentID:    req.AssessmentID,
+		ViolationType:   req.ViolationType,
+		ViolationName:   dto.GetViolationTypeName(req.ViolationType),
+		Severity:        req.Severity,
+		SeverityName:    dto.GetSeverityName(req.Severity),
+		ConfidenceScore: req.ConfidenceScore,
+		CreatedAt:       req.CreatedAt,
+		Status:          "queued",
+		MessageID:       messageID,
+	}, nil
 }
 
 // IngestBatch processes multiple violations in a batch
@@ -97,29 +119,52 @@ func (s *ViolationService) IngestBatch(ctx context.Context, req *dto.BatchViolat
 		}
 	}
 
-	// Convert DTOs to models
-	violations := make([]*model.ViolationLog, len(req.Violations))
-	for i, vReq := range req.Violations {
-		violations[i] = s.dtoToModel(&vReq)
+	// Publish batch to Redis Stream
+	messages := make([]map[string]interface{}, len(req.Violations))
+	for i := range req.Violations {
+		payload, err := s.marshalJSON(&req.Violations[i])
+		if err != nil {
+			s.logger.Error("Failed to marshal violation",
+				zap.Int("index", i),
+				zap.Error(err),
+			)
+			return nil, fmt.Errorf("failed to marshal violation %d: %w", i, err)
+		}
+		messages[i] = map[string]interface{}{
+			"payload":   payload,
+			"timestamp": time.Now().Unix(),
+		}
 	}
 
-	// Insert batch
-	if err := s.repo.InsertBatch(ctx, violations); err != nil {
-		s.logger.Error("Failed to insert batch",
-			zap.Int("batch_size", len(violations)),
+	messageIDs, err := s.producer.PublishBatch(ctx, s.config.Worker.StreamName, messages, nil)
+	if err != nil {
+		s.logger.Error("Failed to publish batch to stream",
+			zap.Int("batch_size", len(req.Violations)),
 			zap.Error(err),
 		)
-		return nil, fmt.Errorf("failed to insert batch: %w", err)
+		return nil, fmt.Errorf("failed to publish batch: %w", err)
 	}
 
-	s.logger.Info("Batch ingested successfully",
-		zap.Int("batch_size", len(violations)),
+	s.logger.Info("Batch queued successfully",
+		zap.Int("batch_size", len(req.Violations)),
 	)
 
 	// Convert to responses
-	responses := make([]dto.ViolationResponse, len(violations))
-	for i, v := range violations {
-		responses[i] = *s.modelToResponse(v)
+	responses := make([]dto.ViolationResponse, len(req.Violations))
+	for i, vReq := range req.Violations {
+		responses[i] = dto.ViolationResponse{
+			AttemptID:       vReq.AttemptID,
+			UserID:          vReq.UserID,
+			AssessmentID:    vReq.AssessmentID,
+			ViolationType:   vReq.ViolationType,
+			ViolationName:   dto.GetViolationTypeName(vReq.ViolationType),
+			Severity:        vReq.Severity,
+			SeverityName:    dto.GetSeverityName(vReq.Severity),
+			ConfidenceScore: vReq.ConfidenceScore,
+			CreatedAt:       vReq.CreatedAt,
+			Status:          "queued",
+			MessageID:       messageIDs[i],
+		}
 	}
 
 	return responses, nil
@@ -289,6 +334,15 @@ func (s *ViolationService) modelToResponse(v *model.ViolationLog) *dto.Violation
 		CreatedAt:       v.CreatedAt,
 		Status:          "processed",
 	}
+}
+
+// marshalJSON marshals to JSON and returns error instead of panicking
+func (s *ViolationService) marshalJSON(v interface{}) (string, error) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal JSON: %w", err)
+	}
+	return string(data), nil
 }
 
 // Ensure ViolationService implements ViolationServiceInterface

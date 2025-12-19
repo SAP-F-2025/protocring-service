@@ -36,3 +36,14 @@ casdoor:
 log:
   level: info # debug, info, warn, error
   format: json # json, console
+
+# Worker configuration for async violation processing
+worker:
+  enabled: true                          # Enable/disable workers
+  num_workers: 3                         # Number of concurrent worker goroutines
+  stream_name: "violations:ingest"       # Redis Stream name for violations
+  consumer_group: "violation-workers"    # Consumer group name
+  batch_size: 10                         # Number of messages to consume per batch
+  block_time: 5s                         # Block time for stream reads
+  retry_attempts: 3                      # Number of retry attempts before DLQ
+  dlq_stream: "violations:dlq"           # Dead Letter Queue stream name

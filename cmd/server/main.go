@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"protocring-service/internal/config"
 	"protocring-service/internal/handler"
 	"protocring-service/internal/middleware"
 	repository "protocring-service/internal/repository/module"
 	"protocring-service/internal/service"
+	"protocring-service/internal/worker"
 	"protocring-service/pkg/database"
 	"protocring-service/pkg/server"
 
@@ -33,6 +35,9 @@ func main() {
 		// Provide services
 		service.Module,
 
+		// Provide workers
+		worker.Module,
+
 		// Provide Gin engine and HTTP server
 		fx.Provide(server.NewGinEngine),
 		fx.Provide(server.NewHTTPServer),
@@ -45,6 +50,9 @@ func main() {
 
 		// Invoke HTTP server to ensure it starts
 		fx.Invoke(func(*http.Server) {}),
+
+		// Start workers if enabled
+		fx.Invoke(RegisterWorkerLifecycle),
 
 		// Configure fx logger
 		fx.WithLogger(func(logger *zap.Logger) fxevent.Logger {
@@ -69,4 +77,56 @@ func NewLogger(cfg *config.Config) (*zap.Logger, error) {
 	}
 
 	return logger, nil
+}
+
+// RegisterWorkerLifecycle registers worker lifecycle hooks
+func RegisterWorkerLifecycle(
+	lc fx.Lifecycle,
+	worker *worker.ViolationWorker,
+	cfg *config.Config,
+	logger *zap.Logger,
+) {
+	if !cfg.Worker.Enabled {
+		logger.Info("Workers disabled in configuration")
+		return
+	}
+
+	var workerCtx context.Context
+	var workerCancel context.CancelFunc
+
+	lc.Append(fx.Hook{
+		OnStart: func(ctx context.Context) error {
+			logger.Info("Starting violation workers...")
+
+			// Create a new context for workers
+			workerCtx, workerCancel = context.WithCancel(context.Background())
+
+			// Start workers in background
+			go func() {
+				if err := worker.Start(workerCtx); err != nil {
+					if err != context.Canceled {
+						logger.Error("Worker error", zap.Error(err))
+					}
+				}
+			}()
+
+			return nil
+		},
+		OnStop: func(ctx context.Context) error {
+			logger.Info("Stopping violation workers...")
+
+			// Cancel worker context
+			if workerCancel != nil {
+				workerCancel()
+			}
+
+			// Graceful shutdown with timeout from FX context
+			if err := worker.Shutdown(ctx); err != nil {
+				logger.Warn("Worker shutdown warning", zap.Error(err))
+			}
+
+			logger.Info("Violation workers stopped")
+			return nil
+		},
+	})
 }

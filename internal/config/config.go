@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/spf13/viper"
@@ -13,6 +14,7 @@ type Config struct {
 	Redis    RedisConfig
 	Log      LogConfig
 	Casdoor  CasdoorConfig
+	Worker   WorkerConfig
 }
 
 type ServerConfig struct {
@@ -56,6 +58,17 @@ type CasdoorConfig struct {
 	Organization string
 }
 
+type WorkerConfig struct {
+	Enabled       bool          `mapstructure:"enabled"`
+	NumWorkers    int           `mapstructure:"num_workers"`
+	StreamName    string        `mapstructure:"stream_name"`
+	ConsumerGroup string        `mapstructure:"consumer_group"`
+	BatchSize     int64         `mapstructure:"batch_size"`
+	BlockTime     time.Duration `mapstructure:"block_time"`
+	RetryAttempts int           `mapstructure:"retry_attempts"`
+	DLQStream     string        `mapstructure:"dlq_stream"`
+}
+
 // Load reads configuration from file or environment variables.
 func Load() (*Config, error) {
 	viper.SetConfigName("config")
@@ -63,11 +76,13 @@ func Load() (*Config, error) {
 	viper.AddConfigPath(".")
 	viper.AddConfigPath("./config")
 
-	// Enable environment variable override
-	viper.AutomaticEnv()
-
 	// Set defaults
 	setDefaults()
+
+	// Enable environment variable override
+	// This allows K8s env vars like SERVER_HOST to map to server.host
+	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	viper.AutomaticEnv()
 
 	// Read config file (optional)
 	if err := viper.ReadInConfig(); err != nil {
@@ -81,7 +96,6 @@ func Load() (*Config, error) {
 	if err := viper.Unmarshal(&config); err != nil {
 		return nil, fmt.Errorf("unable to decode config: %w", err)
 	}
-
 	return &config, nil
 }
 
@@ -119,4 +133,14 @@ func setDefaults() {
 	viper.SetDefault("casdoor.clientid", "")
 	viper.SetDefault("casdoor.clientsecret", "")
 	viper.SetDefault("casdoor.cert", "")
+
+	// Worker defaults
+	viper.SetDefault("worker.enabled", true)
+	viper.SetDefault("worker.num_workers", 3)
+	viper.SetDefault("worker.stream_name", "violations:ingest")
+	viper.SetDefault("worker.consumer_group", "violation-workers")
+	viper.SetDefault("worker.batch_size", 10)
+	viper.SetDefault("worker.block_time", 5*time.Second)
+	viper.SetDefault("worker.retry_attempts", 3)
+	viper.SetDefault("worker.dlq_stream", "violations:dlq")
 }
