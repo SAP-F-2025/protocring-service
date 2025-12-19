@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/spf13/viper"
@@ -75,11 +76,13 @@ func Load() (*Config, error) {
 	viper.AddConfigPath(".")
 	viper.AddConfigPath("./config")
 
-	// Enable environment variable override
-	viper.AutomaticEnv()
-
 	// Set defaults
 	setDefaults()
+
+	// Enable environment variable override
+	// This allows K8s env vars like SERVER_HOST to map to server.host
+	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	viper.AutomaticEnv()
 
 	// Read config file (optional)
 	if err := viper.ReadInConfig(); err != nil {
@@ -93,7 +96,6 @@ func Load() (*Config, error) {
 	if err := viper.Unmarshal(&config); err != nil {
 		return nil, fmt.Errorf("unable to decode config: %w", err)
 	}
-
 	return &config, nil
 }
 
