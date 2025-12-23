@@ -8,6 +8,7 @@ import (
 	"protocring-service/internal/middleware"
 	repository "protocring-service/internal/repository/module"
 	"protocring-service/internal/service"
+	"protocring-service/internal/storage"
 	"protocring-service/internal/worker"
 	"protocring-service/pkg/database"
 	"protocring-service/pkg/server"
@@ -31,6 +32,9 @@ func main() {
 
 		// Provide repositories
 		repository.Module,
+
+		// Provide storage (optional - returns nil if not configured)
+		storage.Module,
 
 		// Provide services
 		service.Module,

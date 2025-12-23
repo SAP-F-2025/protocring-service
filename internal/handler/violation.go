@@ -258,6 +258,47 @@ func (h *ViolationHandler) GetLatestViolation(c *gin.Context) {
 	c.JSON(http.StatusOK, violation)
 }
 
+// GetPresignedUploadURL godoc
+// @Summary Get presigned URL for uploading violation snapshot
+// @Description Generate a presigned PUT URL for uploading violation evidence image
+// @Tags violations
+// @Produce json
+// @Param attempt_id query int true "Attempt ID"
+// @Param violation_type query int true "Violation type (0-23)"
+// @Param content_type query string false "Content type (default: image/jpeg)"
+// @Success 200 {object} dto.PresignedURLResponse
+// @Failure 400 {object} ErrorResponse
+// @Failure 500 {object} ErrorResponse
+// @Router /api/v1/violations/presigned-url [get]
+func (h *ViolationHandler) GetPresignedUploadURL(c *gin.Context) {
+	var req dto.PresignedURLRequest
+
+	if err := c.ShouldBindQuery(&req); err != nil {
+		h.logger.Error("Invalid presigned URL request", zap.Error(err))
+		c.JSON(http.StatusBadRequest, ErrorResponse{
+			Error:   "invalid_request",
+			Message: err.Error(),
+		})
+		return
+	}
+
+	response, err := h.violationService.GenerateUploadURL(c.Request.Context(), &req)
+	if err != nil {
+		h.logger.Error("Failed to generate presigned URL",
+			zap.Uint64("attempt_id", req.AttemptID),
+			zap.Int("violation_type", req.ViolationType),
+			zap.Error(err),
+		)
+		c.JSON(http.StatusInternalServerError, ErrorResponse{
+			Error:   "presign_failed",
+			Message: err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
 // Helper types for responses
 type ErrorResponse struct {
 	Error   string `json:"error"`

@@ -29,6 +29,17 @@ type ViolationWorker struct {
 
 	wg       sync.WaitGroup
 	shutdown chan struct{}
+
+	// Batch buffer for high-throughput insert
+	batchMu     sync.Mutex
+	batchBuffer []*batchItem
+	flushTicker *time.Ticker
+}
+
+// batchItem holds a violation and its message ID for batch processing
+type batchItem struct {
+	violation *model.ViolationLog
+	msgID     string
 }
 
 // Start starts the worker
@@ -37,14 +48,20 @@ func (w *ViolationWorker) Start(ctx context.Context) error {
 		zap.String("stream", w.config.StreamName),
 		zap.String("consumer_group", w.config.ConsumerGroup),
 		zap.Int("num_workers", w.config.NumWorkers),
+		zap.Int("insert_batch_size", w.config.InsertBatchSize),
+		zap.Duration("insert_flush_timeout", w.config.InsertFlushTimeout),
 	)
 
-	// Create consumer group once (before starting workers)
-	// Call Redis directly instead of creating temp consumer
-	err := w.redisClient.XGroupCreateMkStream(ctx, w.config.StreamName, w.config.ConsumerGroup, ">").Err()
-	if err != nil && err.Error() != "BUSYGROUP Consumer Group name already exists" {
-		return fmt.Errorf("failed to create consumer group: %w", err)
-	}
+	// Initialize batch buffer
+	w.batchBuffer = make([]*batchItem, 0, w.config.InsertBatchSize)
+
+	// Start flush ticker for time-based flush
+	w.flushTicker = time.NewTicker(w.config.InsertFlushTimeout)
+	w.wg.Add(1)
+	go func() {
+		defer w.wg.Done()
+		w.runFlushTicker(ctx)
+	}()
 
 	hostname, _ := os.Hostname()
 
@@ -70,8 +87,33 @@ func (w *ViolationWorker) Start(ctx context.Context) error {
 		}(i, consumer)
 	}
 
+	// Start dedicated retry worker if enabled
+	if w.config.RetryWorkerEnabled {
+		w.wg.Add(1)
+		go func() {
+			defer w.wg.Done()
+			w.startRetryWorker(ctx)
+		}()
+	}
+
 	w.logger.Info("Violation workers started successfully")
 	return nil
+}
+
+// runFlushTicker periodically flushes the batch buffer
+func (w *ViolationWorker) runFlushTicker(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			// Final flush on shutdown
+			w.flushBatch(context.Background())
+			return
+		case <-w.flushTicker.C:
+			if err := w.flushBatch(ctx); err != nil {
+				w.logger.Error("Failed to flush batch on ticker", zap.Error(err))
+			}
+		}
+	}
 }
 
 // runWorker runs a single worker goroutine with its own consumer
@@ -88,10 +130,113 @@ func (w *ViolationWorker) runWorker(ctx context.Context, workerID int, consumer 
 	logger.Info("Worker goroutine stopped")
 }
 
-// processMessage processes a single violation message
-func (w *ViolationWorker) processMessage(ctx context.Context, msg redis.XMessage) error {
-	startTime := time.Now()
+// startRetryWorker runs a dedicated worker for claiming and reprocessing stale pending messages
+func (w *ViolationWorker) startRetryWorker(ctx context.Context) {
+	w.logger.Info("Starting dedicated retry worker",
+		zap.Duration("check_interval", w.config.RetryCheckInterval),
+		zap.Duration("min_idle_time", w.config.RetryMinIdleTime),
+	)
 
+	ticker := time.NewTicker(w.config.RetryCheckInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			w.logger.Info("Retry worker stopped")
+			return
+		case <-ticker.C:
+			w.processStaleMessages(ctx)
+		}
+	}
+}
+
+// processStaleMessages claims and reprocesses pending messages that have been idle for too long
+func (w *ViolationWorker) processStaleMessages(ctx context.Context) {
+	// Get pending messages
+	pending, err := w.redisClient.XPendingExt(ctx, &redis.XPendingExtArgs{
+		Stream: w.config.StreamName,
+		Group:  w.config.ConsumerGroup,
+		Start:  "-",
+		End:    "+",
+		Count:  w.config.RetryBatchSize,
+	}).Result()
+
+	if err != nil {
+		if !errors.Is(err, redis.Nil) {
+			w.logger.Error("Failed to get pending messages", zap.Error(err))
+		}
+		return
+	}
+
+	if len(pending) == 0 {
+		return
+	}
+
+	// Filter and claim idle messages
+	staleCount := 0
+	for _, p := range pending {
+		if p.Idle < w.config.RetryMinIdleTime {
+			continue
+		}
+
+		staleCount++
+
+		// Claim the message
+		hostname, _ := os.Hostname()
+		claimed, err := w.redisClient.XClaim(ctx, &redis.XClaimArgs{
+			Stream:   w.config.StreamName,
+			Group:    w.config.ConsumerGroup,
+			Consumer: fmt.Sprintf("retry-worker-%s-%d", hostname, os.Getpid()),
+			MinIdle:  w.config.RetryMinIdleTime,
+			Messages: []string{p.ID},
+		}).Result()
+
+		if err != nil {
+			w.logger.Warn("Failed to claim stale message",
+				zap.String("message_id", p.ID),
+				zap.Int64("idle_ms", p.Idle.Milliseconds()),
+				zap.Error(err),
+			)
+			continue
+		}
+
+		// Process claimed messages
+		for _, msg := range claimed {
+			w.logger.Info("Reprocessing stale message",
+				zap.String("message_id", msg.ID),
+				zap.Int64("idle_ms", p.Idle.Milliseconds()),
+				zap.Int64("retry_count", p.RetryCount),
+			)
+
+			if err := w.processMessage(ctx, msg); err != nil {
+				w.logger.Error("Failed to reprocess stale message",
+					zap.String("message_id", msg.ID),
+					zap.Error(err),
+				)
+				// Don't ACK, let it be retried again
+			} else {
+				// ACK successful reprocessing
+				if ackErr := w.redisClient.XAck(ctx, w.config.StreamName, w.config.ConsumerGroup, msg.ID).Err(); ackErr != nil {
+					w.logger.Error("Failed to ACK reprocessed message",
+						zap.String("message_id", msg.ID),
+						zap.Error(ackErr),
+					)
+				}
+			}
+		}
+	}
+
+	if staleCount > 0 {
+		w.logger.Info("Retry worker processed stale messages",
+			zap.Int("total_pending", len(pending)),
+			zap.Int("stale_messages", staleCount),
+		)
+	}
+}
+
+// processMessage adds a violation to the batch buffer instead of immediate insert
+func (w *ViolationWorker) processMessage(ctx context.Context, msg redis.XMessage) error {
 	// Extract payload
 	payloadStr, ok := msg.Values["payload"].(string)
 	if !ok {
@@ -107,44 +252,83 @@ func (w *ViolationWorker) processMessage(ctx context.Context, msg redis.XMessage
 	// Convert to model
 	violation := w.dtoToModel(&req)
 
-	// Get retry count from message
-	retryCount := w.getRetryCount(msg)
+	// Add to batch buffer
+	w.batchMu.Lock()
+	w.batchBuffer = append(w.batchBuffer, &batchItem{
+		violation: violation,
+		msgID:     msg.ID,
+	})
+	shouldFlush := len(w.batchBuffer) >= w.config.InsertBatchSize
+	w.batchMu.Unlock()
 
-	// Insert to database with retry
-	if err := w.insertWithRetry(ctx, violation, retryCount); err != nil {
-		// Send to DLQ if max retries exceeded
-		if retryCount >= w.config.RetryAttempts {
-			w.logger.Error("Max retries exceeded, sending to DLQ",
-				zap.Uint64("attempt_id", violation.AttemptID),
-				zap.Int("retry_count", retryCount),
-				zap.Error(err),
-			)
-
-			if dlqErr := w.sendToDLQ(ctx, msg, err); dlqErr != nil {
-				w.logger.Error("Failed to send message to DLQ", zap.Error(dlqErr))
-			}
-
-			// Return nil to ACK the message (it's in DLQ now)
-			return nil
+	// Flush if buffer is full
+	if shouldFlush {
+		if err := w.flushBatch(ctx); err != nil {
+			w.logger.Error("Failed to flush batch on size trigger", zap.Error(err))
+			// Don't return error here - message is in buffer, will be retried on next flush
 		}
+	}
 
-		// Return error to trigger retry
-		return fmt.Errorf("failed to insert violation (attempt %d/%d): %w",
-			retryCount+1, w.config.RetryAttempts, err)
+	// Return nil - ACK will happen in flushBatch after successful insert
+	return nil
+}
+
+// flushBatch inserts all buffered violations and batch ACKs messages
+func (w *ViolationWorker) flushBatch(ctx context.Context) error {
+	w.batchMu.Lock()
+	if len(w.batchBuffer) == 0 {
+		w.batchMu.Unlock()
+		return nil
+	}
+
+	// Take ownership of current buffer
+	items := w.batchBuffer
+	w.batchBuffer = make([]*batchItem, 0, w.config.InsertBatchSize)
+	w.batchMu.Unlock()
+
+	// Extract violations and message IDs
+	violations := make([]*model.ViolationLog, len(items))
+	msgIDs := make([]string, len(items))
+	for i, item := range items {
+		violations[i] = item.violation
+		msgIDs[i] = item.msgID
+	}
+
+	startTime := time.Now()
+
+	// Batch insert to DB
+	if err := w.repo.InsertBatch(ctx, violations); err != nil {
+		w.logger.Error("Batch insert failed, re-queuing items",
+			zap.Int("count", len(violations)),
+			zap.Error(err),
+		)
+		// Re-add items to buffer for retry
+		w.batchMu.Lock()
+		w.batchBuffer = append(items, w.batchBuffer...)
+		w.batchMu.Unlock()
+		return fmt.Errorf("batch insert failed: %w", err)
+	}
+
+	// Batch ACK all messages
+	if err := w.redisClient.XAck(ctx, w.config.StreamName, w.config.ConsumerGroup, msgIDs...).Err(); err != nil {
+		w.logger.Error("Failed to batch ACK messages",
+			zap.Int("count", len(msgIDs)),
+			zap.Error(err),
+		)
+		// Insert succeeded, so data is safe, but log the ACK failure
 	}
 
 	duration := time.Since(startTime)
-	w.logger.Info("Violation processed successfully",
-		zap.Uint64("violation_id", violation.ID),
-		zap.Uint64("attempt_id", violation.AttemptID),
-		zap.Int("violation_type", violation.ViolationType),
+	w.logger.Info("Batch flushed successfully",
+		zap.Int("count", len(violations)),
 		zap.Duration("duration", duration),
+		zap.Float64("rate_per_sec", float64(len(violations))/duration.Seconds()),
 	)
 
 	return nil
 }
 
-// insertWithRetry attempts to insert violation with exponential backoff
+// insertWithRetry attempts to insert violation with exponential backoff (used by retry worker)
 func (w *ViolationWorker) insertWithRetry(ctx context.Context, violation *model.ViolationLog, retryCount int) error {
 	var err error
 	backoff := time.Duration(1<<uint(retryCount)) * time.Second // Exponential backoff: 1s, 2s, 4s...
@@ -242,6 +426,11 @@ func (w *ViolationWorker) dtoToModel(req *dto.CreateViolationRequest) *model.Vio
 // Shutdown gracefully shuts down the worker
 func (w *ViolationWorker) Shutdown(ctx context.Context) error {
 	w.logger.Info("Shutting down violation worker...")
+
+	// Stop flush ticker
+	if w.flushTicker != nil {
+		w.flushTicker.Stop()
+	}
 
 	close(w.shutdown)
 

@@ -30,6 +30,7 @@ func RegisterRoutes(
 		{
 			violations.POST("", violationHandler.IngestViolation)
 			violations.POST("/batch", violationHandler.IngestBatch)
+			violations.GET("/presigned-url", violationHandler.GetPresignedUploadURL)
 			violations.GET("/attempt/:attempt_id", violationHandler.GetViolationsByAttempt)
 			violations.GET("/attempt/:attempt_id/latest", violationHandler.GetLatestViolation)
 			violations.GET("/analytics/:attempt_id", violationHandler.GetViolationAnalytics)

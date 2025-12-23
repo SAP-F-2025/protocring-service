@@ -14,9 +14,11 @@ import (
 // NewRedisClient creates a new Redis client
 func NewRedisClient(lc fx.Lifecycle, cfg *config.Config, logger *zap.Logger) (*redis.Client, error) {
 	client := redis.NewClient(&redis.Options{
+		Username: "default",
 		Addr:     fmt.Sprintf("%s:%d", cfg.Redis.Host, cfg.Redis.Port),
 		Password: cfg.Redis.Password,
 		DB:       cfg.Redis.DB,
+		// TLSConfig: &tls.Config{},
 	})
 
 	lc.Append(fx.Hook{

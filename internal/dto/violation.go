@@ -29,7 +29,7 @@ type CreateViolationRequest struct {
 
 // BatchViolationRequest - for batching
 type BatchViolationRequest struct {
-	Violations []CreateViolationRequest `json:"violations" binding:"required,max=50,dive"`
+	Violations []CreateViolationRequest `json:"violations"`
 }
 
 // ViolationResponse - API response

@@ -40,10 +40,32 @@ log:
 # Worker configuration for async violation processing
 worker:
   enabled: true                          # Enable/disable workers
-  num_workers: 3                         # Number of concurrent worker goroutines
+  num_workers: 10                        # Number of concurrent worker goroutines (increased for throughput)
   stream_name: "violations:ingest"       # Redis Stream name for violations
   consumer_group: "violation-workers"    # Consumer group name
-  batch_size: 10                         # Number of messages to consume per batch
+  batch_size: 100                        # Number of messages to consume per batch from Redis
   block_time: 5s                         # Block time for stream reads
   retry_attempts: 3                      # Number of retry attempts before DLQ
   dlq_stream: "violations:dlq"           # Dead Letter Queue stream name
+  
+  # Batch insert configuration (for high-throughput DB writes)
+  insert_batch_size: 100                 # Records per DB batch insert
+  insert_flush_timeout: 100ms            # Max time to wait before flushing batch
+  stream_max_len: 500000                 # Redis stream max length (MAXLEN ~)
+  
+  # Retry worker configuration (for claiming stale pending messages)
+  retry_worker_enabled: true             # Enable dedicated retry worker
+  retry_check_interval: 30s              # How often to check for stale messages
+  retry_min_idle_time: 1m                # Claim messages idle for > this duration
+  retry_batch_size: 100                  # Max pending messages to check per cycle
+
+# Storage configuration (DigitalOcean Spaces / S3-compatible)
+storage:
+  endpoint: "sgp1.digitaloceanspaces.com"     # Your region endpoint
+  region: "sgp1"                              # Your DO region
+  access_key_id: ""                           # From DO console
+  secret_access_key: ""                       # From DO console  
+  bucket_name: "sap-violations"               # Your bucket name
+  cdn_endpoint: ""                            # Optional: CDN endpoint for public URLs
+  presign_expiry: 5m                          # Presigned URL expiry time
+

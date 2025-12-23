@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"protocring-service/internal/config"
 	"protocring-service/internal/dto"
 	"protocring-service/internal/model"
 	"protocring-service/internal/repository"
+	"protocring-service/internal/storage"
 	"protocring-service/pkg/streams"
 
 	"go.uber.org/zap"
@@ -35,6 +37,9 @@ type ViolationServiceInterface interface {
 	// GetLatestViolation retrieves the most recent violation for an attempt
 	GetLatestViolation(ctx context.Context, attemptID uint64) (*model.ViolationLog, error)
 
+	// GenerateUploadURL generates a presigned URL for uploading violation snapshot
+	GenerateUploadURL(ctx context.Context, req *dto.PresignedURLRequest) (*dto.PresignedURLResponse, error)
+
 	// ValidateRequest validates a violation request
 	ValidateRequest(req *dto.CreateViolationRequest) error
 }
@@ -43,6 +48,7 @@ type ViolationServiceInterface interface {
 type ViolationService struct {
 	repo     repository.ViolationRepositoryInterface
 	producer *streams.Producer
+	storage  storage.StorageService
 	config   *config.Config
 	logger   *zap.Logger
 }
@@ -51,12 +57,14 @@ type ViolationService struct {
 func NewViolationService(
 	repo repository.ViolationRepositoryInterface,
 	producer *streams.Producer,
+	storageService storage.StorageService,
 	config *config.Config,
 	logger *zap.Logger,
 ) *ViolationService {
 	return &ViolationService{
 		repo:     repo,
 		producer: producer,
+		storage:  storageService,
 		config:   config,
 		logger:   logger,
 	}
@@ -69,8 +77,12 @@ func (s *ViolationService) IngestViolation(ctx context.Context, req *dto.CreateV
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 
-	// Publish to Redis Stream for async processing
-	messageID, err := s.producer.PublishJSON(ctx, s.config.Worker.StreamName, req, nil)
+	// Publish to Redis Stream with MAXLEN to cap stream size
+	opts := &streams.PublishOptions{
+		MaxLen:      s.config.Worker.StreamMaxLen,
+		Approximate: true,
+	}
+	messageID, err := s.producer.PublishJSON(ctx, s.config.Worker.StreamName, req, opts)
 	if err != nil {
 		s.logger.Error("Failed to publish violation to stream",
 			zap.Uint64("attempt_id", req.AttemptID),
@@ -108,9 +120,9 @@ func (s *ViolationService) IngestBatch(ctx context.Context, req *dto.BatchViolat
 		return nil, fmt.Errorf("no violations to process")
 	}
 
-	if len(req.Violations) > 50 {
-		return nil, fmt.Errorf("batch size exceeds maximum of 50")
-	}
+	//if len(req.Violations) > 50 {
+	//	return nil, fmt.Errorf("batch size exceeds maximum of 50")
+	//}
 
 	// Validate all requests
 	for i, vReq := range req.Violations {
@@ -136,7 +148,11 @@ func (s *ViolationService) IngestBatch(ctx context.Context, req *dto.BatchViolat
 		}
 	}
 
-	messageIDs, err := s.producer.PublishBatch(ctx, s.config.Worker.StreamName, messages, nil)
+	opts := &streams.PublishOptions{
+		MaxLen:      s.config.Worker.StreamMaxLen,
+		Approximate: true,
+	}
+	messageIDs, err := s.producer.PublishBatch(ctx, s.config.Worker.StreamName, messages, opts)
 	if err != nil {
 		s.logger.Error("Failed to publish batch to stream",
 			zap.Int("batch_size", len(req.Violations)),
@@ -185,6 +201,9 @@ func (s *ViolationService) GetViolationsByAttempt(ctx context.Context, attemptID
 		return nil, fmt.Errorf("failed to find violations: %w", err)
 	}
 
+	// Transform snapshot URLs to full CDN URLs
+	s.transformSnapshotURLs(violations)
+
 	return violations, nil
 }
 
@@ -202,6 +221,9 @@ func (s *ViolationService) GetViolationsByUser(ctx context.Context, userID strin
 		)
 		return nil, fmt.Errorf("failed to find violations: %w", err)
 	}
+
+	// Transform snapshot URLs to full CDN URLs
+	s.transformSnapshotURLs(violations)
 
 	return violations, nil
 }
@@ -262,7 +284,71 @@ func (s *ViolationService) GetLatestViolation(ctx context.Context, attemptID uin
 		return nil, fmt.Errorf("failed to get latest violation: %w", err)
 	}
 
+	// Transform snapshot URL to full CDN URL
+	if violation != nil {
+		s.transformSnapshotURL(violation)
+	}
+
 	return violation, nil
+}
+
+// GenerateUploadURL generates a presigned URL for uploading violation snapshot
+func (s *ViolationService) GenerateUploadURL(ctx context.Context, req *dto.PresignedURLRequest) (*dto.PresignedURLResponse, error) {
+	// Check if storage is configured
+	if s.storage == nil {
+		return nil, fmt.Errorf("storage service not configured")
+	}
+
+	// Default content type
+	contentType := req.ContentType
+	if contentType == "" {
+		contentType = "image/jpeg"
+	}
+
+	// Determine file extension from content type
+	ext := "jpg"
+	switch contentType {
+	case "image/png":
+		ext = "png"
+	case "image/webp":
+		ext = "webp"
+	case "image/gif":
+		ext = "gif"
+	}
+
+	// Generate object key
+	objectKey := dto.GenerateObjectKey(req.AttemptID, req.ViolationType, ext)
+
+	// Generate presigned PUT URL
+	uploadURL, err := s.storage.GeneratePresignedPutURL(ctx, objectKey, contentType)
+	if err != nil {
+		s.logger.Error("Failed to generate presigned upload URL",
+			zap.Uint64("attempt_id", req.AttemptID),
+			zap.Int("violation_type", req.ViolationType),
+			zap.Error(err),
+		)
+		return nil, fmt.Errorf("failed to generate upload URL: %w", err)
+	}
+
+	// Calculate expiry time
+	expiry := s.config.Storage.PresignExpiry
+	if expiry == 0 {
+		expiry = 5 * time.Minute
+	}
+
+	s.logger.Info("Generated presigned upload URL",
+		zap.Uint64("attempt_id", req.AttemptID),
+		zap.String("object_key", objectKey),
+		zap.Duration("expiry", expiry),
+	)
+
+	return &dto.PresignedURLResponse{
+		UploadURL:   uploadURL,
+		ObjectKey:   objectKey,
+		PublicURL:   s.storage.GetPublicURL(objectKey),
+		ExpiresAt:   time.Now().Add(expiry),
+		ContentType: contentType,
+	}, nil
 }
 
 // ValidateRequest validates a violation request
@@ -292,6 +378,13 @@ func (s *ViolationService) ValidateRequest(req *dto.CreateViolationRequest) erro
 	// Validate confidence score
 	if req.ConfidenceScore < 0 || req.ConfidenceScore > 1 {
 		return fmt.Errorf("confidence_score must be between 0 and 1")
+	}
+
+	// Validate snapshot URL format if provided
+	if req.SnapshotURL != "" {
+		if !strings.HasPrefix(req.SnapshotURL, "violations/") {
+			return fmt.Errorf("invalid snapshot_url format: must start with 'violations/'")
+		}
 	}
 
 	if req.IsProlonged && req.EndedAt.IsZero() {
@@ -333,6 +426,25 @@ func (s *ViolationService) modelToResponse(v *model.ViolationLog) *dto.Violation
 		ConfidenceScore: v.ConfidenceScore,
 		CreatedAt:       v.CreatedAt,
 		Status:          "processed",
+	}
+}
+
+// transformSnapshotURL converts an object key to a full CDN URL
+func (s *ViolationService) transformSnapshotURL(v *model.ViolationLog) {
+	if v.SnapshotURL == "" {
+		return
+	}
+
+	// If storage is configured, get the public URL
+	if s.storage != nil {
+		v.SnapshotURL = s.storage.GetPublicURL(v.SnapshotURL)
+	}
+}
+
+// transformSnapshotURLs converts object keys to full CDN URLs for a slice of violations
+func (s *ViolationService) transformSnapshotURLs(violations []*model.ViolationLog) {
+	for _, v := range violations {
+		s.transformSnapshotURL(v)
 	}
 }
 

@@ -87,7 +87,7 @@ func (c *Consumer) Start(ctx context.Context) error {
 
 	// Create consumer groups for all streams
 	for _, stream := range c.streams {
-		if err := c.CreateConsumerGroup(ctx, stream, c.group, ">"); err != nil {
+		if err := c.CreateConsumerGroup(ctx, stream, c.group, "0"); err != nil {
 			return err
 		}
 	}

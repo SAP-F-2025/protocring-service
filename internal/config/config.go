@@ -15,6 +15,7 @@ type Config struct {
 	Log      LogConfig
 	Casdoor  CasdoorConfig
 	Worker   WorkerConfig
+	Storage  StorageConfig
 }
 
 type ServerConfig struct {
@@ -67,6 +68,29 @@ type WorkerConfig struct {
 	BlockTime     time.Duration `mapstructure:"block_time"`
 	RetryAttempts int           `mapstructure:"retry_attempts"`
 	DLQStream     string        `mapstructure:"dlq_stream"`
+
+	// Batch insert configuration
+	InsertBatchSize    int           `mapstructure:"insert_batch_size"`    // Records per DB insert batch
+	InsertFlushTimeout time.Duration `mapstructure:"insert_flush_timeout"` // Max time to wait before flush
+
+	// Redis Stream configuration
+	StreamMaxLen int64 `mapstructure:"stream_max_len"` // Max stream length (MAXLEN)
+
+	// Retry worker configuration
+	RetryWorkerEnabled bool          `mapstructure:"retry_worker_enabled"`
+	RetryCheckInterval time.Duration `mapstructure:"retry_check_interval"`
+	RetryMinIdleTime   time.Duration `mapstructure:"retry_min_idle_time"`
+	RetryBatchSize     int64         `mapstructure:"retry_batch_size"`
+}
+
+type StorageConfig struct {
+	Endpoint        string        `mapstructure:"endpoint"`
+	Region          string        `mapstructure:"region"`
+	AccessKeyID     string        `mapstructure:"access_key_id"`
+	SecretAccessKey string        `mapstructure:"secret_access_key"`
+	BucketName      string        `mapstructure:"bucket_name"`
+	CDNEndpoint     string        `mapstructure:"cdn_endpoint"`
+	PresignExpiry   time.Duration `mapstructure:"presign_expiry"`
 }
 
 // Load reads configuration from file or environment variables.
@@ -136,11 +160,31 @@ func setDefaults() {
 
 	// Worker defaults
 	viper.SetDefault("worker.enabled", true)
-	viper.SetDefault("worker.num_workers", 3)
+	viper.SetDefault("worker.num_workers", 10)
 	viper.SetDefault("worker.stream_name", "violations:ingest")
 	viper.SetDefault("worker.consumer_group", "violation-workers")
-	viper.SetDefault("worker.batch_size", 10)
+	viper.SetDefault("worker.batch_size", 100)
 	viper.SetDefault("worker.block_time", 5*time.Second)
 	viper.SetDefault("worker.retry_attempts", 3)
 	viper.SetDefault("worker.dlq_stream", "violations:dlq")
+
+	// Batch insert defaults
+	viper.SetDefault("worker.insert_batch_size", 100)
+	viper.SetDefault("worker.insert_flush_timeout", 100*time.Millisecond)
+	viper.SetDefault("worker.stream_max_len", 500000)
+
+	// Retry worker defaults
+	viper.SetDefault("worker.retry_worker_enabled", true)
+	viper.SetDefault("worker.retry_check_interval", 30*time.Second)
+	viper.SetDefault("worker.retry_min_idle_time", 1*time.Minute)
+	viper.SetDefault("worker.retry_batch_size", 100)
+
+	// Storage defaults (DigitalOcean Spaces)
+	viper.SetDefault("storage.endpoint", "")
+	viper.SetDefault("storage.region", "sgp1")
+	viper.SetDefault("storage.access_key_id", "")
+	viper.SetDefault("storage.secret_access_key", "")
+	viper.SetDefault("storage.bucket_name", "")
+	viper.SetDefault("storage.cdn_endpoint", "")
+	viper.SetDefault("storage.presign_expiry", 5*time.Minute)
 }
