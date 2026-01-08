@@ -24,10 +24,20 @@ var Module = fx.Module("notification",
 		fx.Annotate(NewNotificationRedis, fx.ResultTags(`name:"notificationRedis"`)),
 	),
 
+	// Provide unnamed Redis client for other services (HealthService, etc.)
+	// This is an alias to workerRedis
+	fx.Provide(NewDefaultRedis),
+
 	// Provide notification components
 	fx.Provide(NewNotificationPublisher),
 	fx.Provide(NewAssessmentClient),
 )
+
+// NewDefaultRedis provides an unnamed Redis client for services that don't use named injection
+// This uses the same config as workerRedis
+func NewDefaultRedis(lc fx.Lifecycle, cfg *config.Config, logger *zap.Logger) (*redis.Client, error) {
+	return createRedisClient(lc, &cfg.Redis, logger, "default")
+}
 
 // NewWorkerRedis creates the Redis client for worker operations (violations ingestion)
 func NewWorkerRedis(lc fx.Lifecycle, cfg *config.Config, logger *zap.Logger) (*redis.Client, error) {

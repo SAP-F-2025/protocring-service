@@ -72,8 +72,15 @@ func (p *NotificationPublisher) PublishViolation(ctx context.Context, event *Pro
 		return fmt.Errorf("failed to marshal event: %w", err)
 	}
 
+	// Marshal proctorIds as JSON array string for notification-service
+	proctorIDsJSON, err := json.Marshal(event.ProctorIDs)
+	if err != nil {
+		proctorIDsJSON = []byte("[]")
+	}
+
 	// Prepare fields for XADD
-	// notification-service reads these directly from the stream
+	// notification-service uses objectMapper.convertValue() to deserialize
+	// So we need to send proctorIds as a JSON array string
 	fields := map[string]interface{}{
 		"eventId":       event.EventID,
 		"timestamp":     event.Timestamp.Format(time.RFC3339),
@@ -82,12 +89,8 @@ func (p *NotificationPublisher) PublishViolation(ctx context.Context, event *Pro
 		"sessionId":     event.SessionID,
 		"violationType": event.ViolationType,
 		"severity":      event.Severity,
-		"data":          string(eventJSON), // Full event as JSON for flexibility
-	}
-
-	// Handle proctorIds array - flatten for Redis
-	for i, proctorID := range event.ProctorIDs {
-		fields[fmt.Sprintf("proctorIds.[%d]", i)] = proctorID
+		"proctorIds":    string(proctorIDsJSON), // JSON array string: ["id1","id2"]
+		"data":          string(eventJSON),      // Full event as JSON for flexibility
 	}
 
 	// Use XADD to publish to the stream

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"protocring-service/internal/client"
 	"protocring-service/internal/config"
 	"protocring-service/internal/dto"
 	"protocring-service/internal/events"
@@ -28,7 +29,7 @@ type NotificationPublisherInterface interface {
 
 // AssessmentClientInterface defines the interface for assessment service client
 type AssessmentClientInterface interface {
-	GetAttemptCreator(ctx context.Context, attemptID uint64) (string, error)
+	GetAttemptDetails(ctx context.Context, attemptID uint64) (*client.AttemptDetails, error)
 }
 
 // ViolationWorker handles consuming violations from Redis Stream and inserting to DB
@@ -51,8 +52,7 @@ type ViolationWorker struct {
 	notifPublisher   NotificationPublisherInterface
 	notifConfig      *config.NotificationConfig
 	assessmentClient AssessmentClientInterface
-	cooldownCache    map[string]time.Time // key: attemptID_violationType
-	cooldownMu       sync.RWMutex
+	// Note: Cooldown is now handled via Redis (distributed, persistent)
 }
 
 // batchItem holds a violation and its message ID for batch processing
@@ -485,29 +485,29 @@ func (w *ViolationWorker) Shutdown(ctx context.Context) error {
 
 // maybeNotifyViolation publishes a notification for a violation if not in cooldown
 func (w *ViolationWorker) maybeNotifyViolation(ctx context.Context, v *model.ViolationLog) {
-	// Check cooldown
+	// Try to acquire cooldown lock (atomic check-and-set)
 	cooldownKey := fmt.Sprintf("%d_%d", v.AttemptID, v.ViolationType)
-	if w.isInCooldown(cooldownKey) {
+	if !w.tryAcquireCooldown(cooldownKey) {
 		w.logger.Debug("Skipping notification, in cooldown",
 			zap.Uint64("attempt_id", v.AttemptID),
 			zap.Int("violation_type", v.ViolationType))
 		return
 	}
 
-	// Get creator (teacher) from assessment-service
-	creatorID := ""
+	// Get creator (teacher) and student info from assessment-service
+	var details *client.AttemptDetails
 	if w.assessmentClient != nil {
 		var err error
-		creatorID, err = w.assessmentClient.GetAttemptCreator(ctx, v.AttemptID)
+		details, err = w.assessmentClient.GetAttemptDetails(ctx, v.AttemptID)
 		if err != nil {
-			w.logger.Warn("Failed to get attempt creator",
+			w.logger.Warn("Failed to get attempt details",
 				zap.Uint64("attempt_id", v.AttemptID),
 				zap.Error(err))
 			return
 		}
 	}
 
-	if creatorID == "" {
+	if details == nil || details.CreatorID == "" {
 		w.logger.Warn("No creator found for attempt, skipping notification",
 			zap.Uint64("attempt_id", v.AttemptID))
 		return
@@ -516,10 +516,11 @@ func (w *ViolationWorker) maybeNotifyViolation(ctx context.Context, v *model.Vio
 	// Build and publish notification event
 	event := &events.ProctoringViolationEvent{
 		UserID:        v.UserID,
+		Username:      details.StudentUsername, // Student's name from assessment-service
 		SessionID:     strconv.FormatUint(v.AttemptID, 10),
 		ViolationType: dto.GetViolationTypeName(v.ViolationType),
 		Severity:      dto.GetSeverityName(v.Severity),
-		ProctorIDs:    []string{creatorID},
+		ProctorIDs:    []string{details.CreatorID},
 		Timestamp:     v.CreatedAt,
 	}
 
@@ -530,69 +531,47 @@ func (w *ViolationWorker) maybeNotifyViolation(ctx context.Context, v *model.Vio
 		return
 	}
 
-	// Update cooldown
-	w.setCooldown(cooldownKey)
-
 	w.logger.Info("Violation notification published",
 		zap.Uint64("attempt_id", v.AttemptID),
 		zap.Int("violation_type", v.ViolationType),
 		zap.String("severity", event.Severity),
-		zap.String("creator_id", creatorID))
+		zap.String("creator_id", details.CreatorID),
+		zap.String("student_name", details.StudentUsername))
 }
 
-// isInCooldown checks if a notification is still in cooldown period
-func (w *ViolationWorker) isInCooldown(key string) bool {
+// tryAcquireCooldown attempts to acquire a cooldown lock for the given key.
+// Returns true if this is the first notification (cooldown acquired), false if in cooldown.
+// Uses Redis SET NX EX for atomic check-and-set to prevent race conditions.
+func (w *ViolationWorker) tryAcquireCooldown(key string) bool {
 	if w.notifConfig == nil || w.notifConfig.CooldownSeconds <= 0 {
-		return false
+		return true // No cooldown configured, always allow
 	}
 
-	w.cooldownMu.RLock()
-	defer w.cooldownMu.RUnlock()
-
-	if w.cooldownCache == nil {
-		return false
+	if w.redisClient == nil {
+		return true // No Redis, allow (fallback)
 	}
 
-	lastNotify, exists := w.cooldownCache[key]
-	if !exists {
-		return false
+	cooldownKey := fmt.Sprintf("notif:cooldown:%s", key)
+	ttl := time.Duration(w.notifConfig.CooldownSeconds) * time.Second
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// SET NX EX: Set if Not Exists with Expiration (atomic operation)
+	// Returns true if the key was set (first notification)
+	// Returns false if the key already exists (in cooldown)
+	success, err := w.redisClient.SetNX(ctx, cooldownKey, "1", ttl).Result()
+	if err != nil {
+		w.logger.Warn("Failed to acquire cooldown lock in Redis, allowing notification",
+			zap.String("key", key),
+			zap.Error(err))
+		return true // On error, allow notification
 	}
 
-	cooldown := time.Duration(w.notifConfig.CooldownSeconds) * time.Second
-	return time.Since(lastNotify) < cooldown
-}
-
-// setCooldown marks a notification key as having been sent
-func (w *ViolationWorker) setCooldown(key string) {
-	if w.notifConfig == nil || w.notifConfig.CooldownSeconds <= 0 {
-		return
+	if !success {
+		w.logger.Debug("Notification in cooldown, skipping",
+			zap.String("key", key))
 	}
 
-	w.cooldownMu.Lock()
-	defer w.cooldownMu.Unlock()
-
-	if w.cooldownCache == nil {
-		w.cooldownCache = make(map[string]time.Time)
-	}
-
-	w.cooldownCache[key] = time.Now()
-}
-
-// cleanupCooldownCache periodically removes expired entries from the cooldown cache
-func (w *ViolationWorker) cleanupCooldownCache() {
-	if w.notifConfig == nil {
-		return
-	}
-
-	w.cooldownMu.Lock()
-	defer w.cooldownMu.Unlock()
-
-	cooldown := time.Duration(w.notifConfig.CooldownSeconds) * time.Second
-	now := time.Now()
-
-	for key, lastNotify := range w.cooldownCache {
-		if now.Sub(lastNotify) > cooldown*2 { // Keep entries for 2x cooldown period
-			delete(w.cooldownCache, key)
-		}
-	}
+	return success
 }

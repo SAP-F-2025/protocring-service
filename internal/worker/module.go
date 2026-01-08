@@ -6,7 +6,6 @@ import (
 	"protocring-service/internal/events"
 	"protocring-service/internal/repository"
 	"protocring-service/pkg/streams"
-	"time"
 
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/fx"
@@ -41,14 +40,14 @@ type ViolationWorkerParams struct {
 // NewViolationWorker creates a ViolationWorker with FX dependency injection
 func NewViolationWorker(p ViolationWorkerParams) *ViolationWorker {
 	worker := &ViolationWorker{
-		config:        &p.Config.Worker,
-		redisClient:   p.RedisClient,
-		producer:      streams.NewProducer(p.RedisClient),
-		repo:          p.Repo,
-		logger:        p.Logger.With(zap.String("component", "violation_worker")),
-		shutdown:      make(chan struct{}),
-		notifConfig:   &p.Config.Notification,
-		cooldownCache: make(map[string]time.Time),
+		config:      &p.Config.Worker,
+		redisClient: p.RedisClient,
+		producer:    streams.NewProducer(p.RedisClient),
+		repo:        p.Repo,
+		logger:      p.Logger.With(zap.String("component", "violation_worker")),
+		shutdown:    make(chan struct{}),
+		notifConfig: &p.Config.Notification,
+		// Note: Cooldown is handled via Redis, no local cache needed
 	}
 
 	// Set notification publisher if available
