@@ -6,6 +6,7 @@ import (
 	"protocring-service/internal/config"
 	"protocring-service/internal/handler"
 	"protocring-service/internal/middleware"
+	"protocring-service/internal/notification"
 	repository "protocring-service/internal/repository/module"
 	"protocring-service/internal/service"
 	"protocring-service/internal/storage"
@@ -28,7 +29,9 @@ func main() {
 
 		// Provide database connections
 		fx.Provide(database.NewSQLXDB),
-		fx.Provide(database.NewRedisClient),
+
+		// Provide notification module (named Redis clients + notification components)
+		notification.Module,
 
 		// Provide repositories
 		repository.Module,

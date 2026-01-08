@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 
 	"protocring-service/internal/config"
 	"protocring-service/internal/dto"
+	"protocring-service/internal/events"
 	"protocring-service/internal/model"
 	"protocring-service/internal/repository"
 	"protocring-service/pkg/streams"
@@ -18,6 +20,16 @@ import (
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 )
+
+// NotificationPublisherInterface defines the interface for notification publishing
+type NotificationPublisherInterface interface {
+	PublishViolation(ctx context.Context, event *events.ProctoringViolationEvent) error
+}
+
+// AssessmentClientInterface defines the interface for assessment service client
+type AssessmentClientInterface interface {
+	GetAttemptCreator(ctx context.Context, attemptID uint64) (string, error)
+}
 
 // ViolationWorker handles consuming violations from Redis Stream and inserting to DB
 type ViolationWorker struct {
@@ -34,6 +46,13 @@ type ViolationWorker struct {
 	batchMu     sync.Mutex
 	batchBuffer []*batchItem
 	flushTicker *time.Ticker
+
+	// Notification components
+	notifPublisher   NotificationPublisherInterface
+	notifConfig      *config.NotificationConfig
+	assessmentClient AssessmentClientInterface
+	cooldownCache    map[string]time.Time // key: attemptID_violationType
+	cooldownMu       sync.RWMutex
 }
 
 // batchItem holds a violation and its message ID for batch processing
@@ -325,6 +344,15 @@ func (w *ViolationWorker) flushBatch(ctx context.Context) error {
 		zap.Float64("rate_per_sec", float64(len(violations))/duration.Seconds()),
 	)
 
+	// Publish notifications for high-severity violations (async)
+	if w.notifConfig != nil && w.notifConfig.Enabled && w.notifPublisher != nil {
+		for _, v := range violations {
+			if v.Severity >= w.notifConfig.MinSeverity {
+				go w.maybeNotifyViolation(context.Background(), v)
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -448,5 +476,123 @@ func (w *ViolationWorker) Shutdown(ctx context.Context) error {
 	case <-ctx.Done():
 		w.logger.Warn("Violation worker shutdown timed out")
 		return ctx.Err()
+	}
+}
+
+// ============================
+// Notification Helper Functions
+// ============================
+
+// maybeNotifyViolation publishes a notification for a violation if not in cooldown
+func (w *ViolationWorker) maybeNotifyViolation(ctx context.Context, v *model.ViolationLog) {
+	// Check cooldown
+	cooldownKey := fmt.Sprintf("%d_%d", v.AttemptID, v.ViolationType)
+	if w.isInCooldown(cooldownKey) {
+		w.logger.Debug("Skipping notification, in cooldown",
+			zap.Uint64("attempt_id", v.AttemptID),
+			zap.Int("violation_type", v.ViolationType))
+		return
+	}
+
+	// Get creator (teacher) from assessment-service
+	creatorID := ""
+	if w.assessmentClient != nil {
+		var err error
+		creatorID, err = w.assessmentClient.GetAttemptCreator(ctx, v.AttemptID)
+		if err != nil {
+			w.logger.Warn("Failed to get attempt creator",
+				zap.Uint64("attempt_id", v.AttemptID),
+				zap.Error(err))
+			return
+		}
+	}
+
+	if creatorID == "" {
+		w.logger.Warn("No creator found for attempt, skipping notification",
+			zap.Uint64("attempt_id", v.AttemptID))
+		return
+	}
+
+	// Build and publish notification event
+	event := &events.ProctoringViolationEvent{
+		UserID:        v.UserID,
+		SessionID:     strconv.FormatUint(v.AttemptID, 10),
+		ViolationType: dto.GetViolationTypeName(v.ViolationType),
+		Severity:      dto.GetSeverityName(v.Severity),
+		ProctorIDs:    []string{creatorID},
+		Timestamp:     v.CreatedAt,
+	}
+
+	if err := w.notifPublisher.PublishViolation(ctx, event); err != nil {
+		w.logger.Warn("Failed to publish violation notification",
+			zap.Uint64("attempt_id", v.AttemptID),
+			zap.Error(err))
+		return
+	}
+
+	// Update cooldown
+	w.setCooldown(cooldownKey)
+
+	w.logger.Info("Violation notification published",
+		zap.Uint64("attempt_id", v.AttemptID),
+		zap.Int("violation_type", v.ViolationType),
+		zap.String("severity", event.Severity),
+		zap.String("creator_id", creatorID))
+}
+
+// isInCooldown checks if a notification is still in cooldown period
+func (w *ViolationWorker) isInCooldown(key string) bool {
+	if w.notifConfig == nil || w.notifConfig.CooldownSeconds <= 0 {
+		return false
+	}
+
+	w.cooldownMu.RLock()
+	defer w.cooldownMu.RUnlock()
+
+	if w.cooldownCache == nil {
+		return false
+	}
+
+	lastNotify, exists := w.cooldownCache[key]
+	if !exists {
+		return false
+	}
+
+	cooldown := time.Duration(w.notifConfig.CooldownSeconds) * time.Second
+	return time.Since(lastNotify) < cooldown
+}
+
+// setCooldown marks a notification key as having been sent
+func (w *ViolationWorker) setCooldown(key string) {
+	if w.notifConfig == nil || w.notifConfig.CooldownSeconds <= 0 {
+		return
+	}
+
+	w.cooldownMu.Lock()
+	defer w.cooldownMu.Unlock()
+
+	if w.cooldownCache == nil {
+		w.cooldownCache = make(map[string]time.Time)
+	}
+
+	w.cooldownCache[key] = time.Now()
+}
+
+// cleanupCooldownCache periodically removes expired entries from the cooldown cache
+func (w *ViolationWorker) cleanupCooldownCache() {
+	if w.notifConfig == nil {
+		return
+	}
+
+	w.cooldownMu.Lock()
+	defer w.cooldownMu.Unlock()
+
+	cooldown := time.Duration(w.notifConfig.CooldownSeconds) * time.Second
+	now := time.Now()
+
+	for key, lastNotify := range w.cooldownCache {
+		if now.Sub(lastNotify) > cooldown*2 { // Keep entries for 2x cooldown period
+			delete(w.cooldownCache, key)
+		}
 	}
 }

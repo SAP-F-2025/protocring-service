@@ -9,13 +9,16 @@ import (
 )
 
 type Config struct {
-	Server   ServerConfig
-	Database DatabaseConfig
-	Redis    RedisConfig
-	Log      LogConfig
-	Casdoor  CasdoorConfig
-	Worker   WorkerConfig
-	Storage  StorageConfig
+	Server            ServerConfig
+	Database          DatabaseConfig
+	Redis             RedisConfig
+	NotificationRedis RedisConfig `mapstructure:"notification_redis"` // Redis #2 for notification MQ
+	Log               LogConfig
+	Casdoor           CasdoorConfig
+	Worker            WorkerConfig
+	Storage           StorageConfig
+	Notification      NotificationConfig      `mapstructure:"notification"`
+	AssessmentService AssessmentServiceConfig `mapstructure:"assessment_service"`
 }
 
 type ServerConfig struct {
@@ -91,6 +94,22 @@ type StorageConfig struct {
 	BucketName      string        `mapstructure:"bucket_name"`
 	CDNEndpoint     string        `mapstructure:"cdn_endpoint"`
 	PresignExpiry   time.Duration `mapstructure:"presign_expiry"`
+}
+
+// NotificationConfig holds settings for violation notification publishing
+type NotificationConfig struct {
+	Enabled         bool   `mapstructure:"enabled"`
+	StreamName      string `mapstructure:"stream_name"`      // "proctoring-events"
+	MinSeverity     int    `mapstructure:"min_severity"`     // 2=HIGH, 3=CRITICAL
+	CooldownSeconds int    `mapstructure:"cooldown_seconds"` // 60s between notifications
+}
+
+// AssessmentServiceConfig holds settings for assessment-service API client
+type AssessmentServiceConfig struct {
+	BaseURL    string        `mapstructure:"base_url"`    // "http://assessment-service:8080"
+	ServiceKey string        `mapstructure:"service_key"` // X-Service-Key header
+	Timeout    time.Duration `mapstructure:"timeout"`     // 5s
+	CacheTTL   time.Duration `mapstructure:"cache_ttl"`   // 10m
 }
 
 // Load reads configuration from file or environment variables.
@@ -187,4 +206,22 @@ func setDefaults() {
 	viper.SetDefault("storage.bucket_name", "")
 	viper.SetDefault("storage.cdn_endpoint", "")
 	viper.SetDefault("storage.presign_expiry", 5*time.Minute)
+
+	// Notification Redis defaults (Redis #2 for notification MQ)
+	viper.SetDefault("notification_redis.host", "localhost")
+	viper.SetDefault("notification_redis.port", 6380)
+	viper.SetDefault("notification_redis.password", "")
+	viper.SetDefault("notification_redis.db", 0)
+
+	// Notification defaults
+	viper.SetDefault("notification.enabled", true)
+	viper.SetDefault("notification.stream_name", "proctoring-events")
+	viper.SetDefault("notification.min_severity", 2) // HIGH=2, CRITICAL=3
+	viper.SetDefault("notification.cooldown_seconds", 60)
+
+	// Assessment Service client defaults
+	viper.SetDefault("assessment_service.base_url", "http://localhost:8081")
+	viper.SetDefault("assessment_service.service_key", "")
+	viper.SetDefault("assessment_service.timeout", 5*time.Second)
+	viper.SetDefault("assessment_service.cache_ttl", 10*time.Minute)
 }

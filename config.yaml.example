@@ -69,3 +69,23 @@ storage:
   cdn_endpoint: ""                            # Optional: CDN endpoint for public URLs
   presign_expiry: 5m                          # Presigned URL expiry time
 
+# Redis for notification MQ (separate instance from worker Redis)
+notification_redis:
+  host: localhost
+  port: 6380                                  # Different port or same host different DB
+  password: ""
+  db: 0
+
+# Notification publishing configuration
+notification:
+  enabled: true
+  stream_name: "proctoring-events"            # Redis Stream consumed by notification-service
+  min_severity: 2                             # Only notify for severity >= HIGH (2=HIGH, 3=CRITICAL)
+  cooldown_seconds: 60                        # Seconds between notifications for same violation type
+
+# Assessment Service API client
+assessment_service:
+  base_url: "http://assessment-service:8080"  # K8s service name or URL
+  service_key: ""                             # X-Service-Key header (inject from K8s secrets)
+  timeout: 5s                                 # HTTP request timeout
+  cache_ttl: 10m                              # Cache creator info for 10 minutes
